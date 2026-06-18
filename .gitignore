@@ -1,5 +1,13 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-.smartthings_credentials.json
 .venv/
+.smartthings_credentials.json
+.smartthings_pat
+.smartthings_session.json
+smartthings_pat.txt
+smartthings_session.json
+samsung_food_token.txt
+*samsung_food_token.txt
+config.json
+*.log

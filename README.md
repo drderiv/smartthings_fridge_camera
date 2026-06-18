@@ -1,6 +1,9 @@
 # SmartThings Family Hub Fridge Camera Integration for Home Assistant
 
-This is a custom integration to output SmartThings Family Hub fridge camera feeds in [HomeAssistant](https://home-assistant.io).
+This is a custom integration to output SmartThings Family Hub fridge camera feeds and live AI Food Manager inventory in [HomeAssistant](https://home-assistant.io).
+
+> 💡 **What's New in this Enhanced Fork?**  
+> Check out the complete [**Feature Enhancements & Incremental Capabilities Guide (CHANGELOG_ENHANCEMENTS.md)**](CHANGELOG_ENHANCEMENTS.md) for full details on the AI Food Manager integration, automated 24-hour PAT rotation microservice, multi-mode OAuth authentication, and resilient caching.
 
 <p float="left">
   <img src="./assets/presentation/dashboard-demo.png" width=600  alt="dashboard-demo"/>
@@ -144,14 +147,105 @@ Make sure to select the additional settings as follows and click "Save":
   <img src="assets/config/config-step-8.png" width=1200  alt="config-step-8"/>
 </p>
 
+# 🥗 AI Food Manager Inventory (Samsung Food)
+
+For Samsung Family Hub refrigerators equipped with the internal AI food camera / Food Manager, this integration can expose your active fridge inventory (food names, thumbnails, compartments, expiration dates, and AI recognition suggestions) as a single clean entity:
+
+* **Entity**: `sensor.samsung_fridge_food_inventory`
+* **State**: Count of active items currently inside the fridge (e.g. `33`)
+* **Attributes**: `total_items`, `last_synced`, and `items` (rich list of active items with image thumbnail URLs).
+
+### Setup (Opt-In):
+
+1. Run the Samsung Food authentication extractor on a machine with a browser (or headless):
+   ```bash
+   python3 scripts/dump_samsung_food.py --config config.json --session smartthings_session.json
+   ```
+2. Place the generated `samsung_food_token.txt` in your Home Assistant `/config` or integration directory (or configure the `input_text.samsung_food_token` helper entity).
+3. The integration will automatically detect the token and register `sensor.samsung_fridge_food_inventory`. If no token is provided, the sensor is omitted so non-AI fridges remain uncluttered.
+
+---
+
+### Dashboard Card Templates
+
+#### 1. Recommended 50/50 Balanced Layout (Food Inventory Table + Door Cameras)
+
+In your dashboard's **Raw Configuration Editor**, use:
+
+```yaml
+views:
+  - title: Smart Fridge
+    path: fridge
+    icon: mdi:fridge-food
+    type: masonry
+    cards:
+      # Left Column: Food Inventory List with Days Old & Aligned Headers
+      - type: markdown
+        title: 🥗 Smart Fridge Inventory
+        content: |
+          {% set last_synced = state_attr('sensor.fridge_food_inventory', 'last_synced') %}
+          **Active Items**: {{ state_attr('sensor.fridge_food_inventory', 'total_items') or 0 }} &nbsp;|&nbsp; **Last Synced**: {{ as_timestamp(last_synced, default=0) | timestamp_custom('%b %d %-I:%M %p', default='Just now') if last_synced else 'Just now' }}
+
+          ---
+
+          | Item | Food Name &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Days Old |
+          | :---: | :--- | :---: |
+          {% set now_ts = as_timestamp(now()) -%}
+          {% for item in (state_attr('sensor.fridge_food_inventory', 'items') or []) | sort(attribute='added_at', reverse=true) -%}
+          {% set raw_ts = item.added_at | int(0) -%}
+          {% set sec_ts = (raw_ts / 1000) if raw_ts > 10000000000 else raw_ts -%}
+          {% set days_old = ((now_ts - sec_ts) / 86400) | round(0, 'floor') | int if sec_ts > 0 else '—' -%}
+          | {% if item.image_url %}<img src="{{ item.image_url }}" width="32" height="32" style="border-radius:6px;object-fit:cover;vertical-align:middle;display:inline-block;"/>{% else %}<img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='24' font-size='22'%3E🍽️%3C/text%3E%3C/svg%3E" width="32" height="32" style="border-radius:6px;vertical-align:middle;display:inline-block;"/>{% endif %} | **{{ item.name }}**{% if item.expiration_date %}<br/><small>⏳ Exp: {{ item.expiration_date }}</small>{% endif %} | {{ days_old }} |
+          {% endfor %}
+
+      # Right Column: ~50% Wider Stacked Door Cameras
+      - type: vertical-stack
+        cards:
+          - type: picture-entity
+            title: 🚪 Left Door Shelves
+            entity: camera.family_hub_top
+            camera_view: live
+            aspect_ratio: '5:6'
+            show_state: false
+
+          - type: picture-entity
+            title: 🚪 Right Door Shelves
+            entity: camera.family_hub_middle
+            camera_view: live
+            aspect_ratio: '5:6'
+            show_state: false
+```
+
+#### 2. Visual Photo Grid (Markdown Card)
+
+```yaml
+type: markdown
+title: 🍎 Fridge Food Gallery
+content: >
+  <div style="display: flex; flex-wrap: wrap; gap: 12px; justify-content: center;">
+  {% for item in state_attr('sensor.samsung_fridge_food_inventory', 'items') %}
+    <div style="text-align: center; width: 85px; background: rgba(255,255,255,0.05); padding: 8px; border-radius: 10px;">
+      {% if item.image_url %}
+        <img src="{{ item.image_url }}" width="60" height="60" style="border-radius: 8px; object-fit: cover;"/>
+      {% else %}
+        <div style="font-size: 32px; height: 60px; line-height: 60px;">🍽️</div>
+      {% endif %}
+      <div style="font-size: 11px; font-weight: bold; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ item.name }}</div>
+    </div>
+  {% endfor %}
+  </div>
+```
+
+---
 
 Credits
 -------
 
 This integration was developed by [ibielopolskyi][ibielopolskyi].<br/>
 HACS integration was added by [CurryPlayer][curryplayer].<br/>
-Special thanks to [HalloTschuess][hallotschuess].<br/>
+Special thanks to [HalloTschuess][hallotschuess] and [TryTryAgain][trytryagain].<br/>
 
 [ibielopolskyi]: https://github.com/ibielopolskyi
 [curryplayer]: https://github.com/CurryPlayer
 [hallotschuess]: https://github.com/HalloTschuess
+[trytryagain]: https://github.com/TryTryAgain

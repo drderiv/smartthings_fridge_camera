@@ -5,3 +5,9 @@ refresh:
     new camera photos. Photos are captured by the fridge hardware on
     door-close events; this service sends the same command but actual
     capture depends on the fridge's current state and firmware.
+
+refresh_food_inventory:
+  name: Refresh food inventory
+  description: >
+    Immediately poll the Samsung Food (Whisk) AI Food Manager cloud API
+    to update the active items in the fridge food inventory sensor.

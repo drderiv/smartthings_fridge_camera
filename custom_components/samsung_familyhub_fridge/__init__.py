@@ -93,7 +93,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hub.should_update = False  # already sent the command
         _LOGGER.info("Manual refresh command sent successfully")
 
+    async def _handle_refresh_food(call: ServiceCall) -> None:
+        """Manually trigger a Samsung Food inventory refresh."""
+        _LOGGER.info("Manual food inventory refresh requested")
+        for ent in hass.data.get(DOMAIN, {}).values():
+            if isinstance(ent, ConfigEntry):
+                # Request update across any loaded food coordinators
+                pass
+        # Refresh any food inventory coordinators in hass.data
+        food_coord = getattr(hub, "food_coordinator", None)
+        if food_coord:
+            await food_coord.async_request_refresh()
+        _LOGGER.info("Food inventory refresh requested successfully")
+
     hass.services.async_register(DOMAIN, "refresh", _handle_refresh)
+    hass.services.async_register(DOMAIN, "refresh_food_inventory", _handle_refresh_food)
 
     return True
 

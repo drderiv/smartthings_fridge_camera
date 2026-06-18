@@ -12,11 +12,10 @@ The script uses the known SmartThings app client IDs (from the decompiled APK).
 Does NOT support 2FA-enabled Samsung accounts.
 """
 
-import argparse
-import sys
-import os
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# conftest installs full HA stubs so scripts run standalone without Home Assistant
+import tests.conftest  # noqa: F401
 
 from custom_components.samsung_familyhub_fridge.auth import (
     SamsungAccountAuth,

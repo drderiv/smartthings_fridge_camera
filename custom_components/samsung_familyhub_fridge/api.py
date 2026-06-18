@@ -1,11 +1,14 @@
 from __future__ import annotations
-from datetime import timedelta
+import os
+import asyncio
+from datetime import datetime, timezone, timedelta
 import logging
 import time
 from typing import TYPE_CHECKING
 
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
+    UpdateFailed,
 )
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 import requests
@@ -13,7 +16,15 @@ import requests
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_state_change_event
 
-from .const import CID, DEFAULT_TIMEOUT
+from .const import (
+    CID,
+    DEFAULT_TIMEOUT,
+    CONF_FOOD_TOKEN,
+    WHISK_FOODLIST_API,
+    FOOD_TOKEN_ENTITY,
+    FOOD_TOKEN_FILE,
+    DEFAULT_FOOD_UPDATE_INTERVAL,
+)
 
 if TYPE_CHECKING:
     from homeassistant.helpers import config_entry_oauth2_flow
@@ -40,6 +51,66 @@ class DataCoordinator(DataUpdateCoordinator):
         self.api = api
         self.last_file_ids = []
         self.last_updated_at = None
+        self._consecutive_failures = 0
+        self._max_consecutive_failures = 10
+
+        # State change listener to dynamically reload the integration when the PAT changes.
+        # This recovers the integration from ConfigEntryAuthFailed states automatically.
+        async def _async_update_and_reload(e, t):
+            new_data = {**e.data, "token": t}
+            self._hass.config_entries.async_update_entry(e, data=new_data)
+            await self._hass.config_entries.async_reload(e.entry_id)
+
+        def _handle_token_change(event):
+            new_state = event.data.get("new_state")
+            if new_state is None or new_state.state in ("unknown", "unavailable", ""):
+                return
+            new_token = new_state.state.strip()
+            if new_token and new_token != self.api.token:
+                _LOGGER.info(
+                    "Detected changed SmartThings PAT in %s. Updating config entry and reloading integration.",
+                    _TOKEN_ENTITY
+                )
+                self.api.update_token(new_token)
+
+                entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
+                for entry in entries:
+                    self._hass.add_job(_async_update_and_reload, entry, new_token)
+
+        self._unsub_token_listener = async_track_state_change_event(
+            hass,
+            [_TOKEN_ENTITY],
+            _handle_token_change,
+        )
+
+        def _handle_food_token_change(event):
+            new_state = event.data.get("new_state")
+            if new_state is None or new_state.state in ("unknown", "unavailable", ""):
+                return
+            new_tok = new_state.state.strip()
+            if new_tok and getattr(self, "food_coordinator", None) is not None:
+                _LOGGER.info(
+                    "Detected updated Samsung Food token in %s. Refreshing food inventory...",
+                    FOOD_TOKEN_ENTITY,
+                )
+                self._hass.add_job(self.food_coordinator.async_request_refresh)
+
+        self._unsub_food_token_listener = async_track_state_change_event(
+            hass,
+            [FOOD_TOKEN_ENTITY],
+            _handle_food_token_change,
+        )
+
+        def _unsubscribe():
+            if hasattr(self, "_unsub_token_listener") and self._unsub_token_listener is not None:
+                self._unsub_token_listener()
+                self._unsub_token_listener = None
+            if hasattr(self, "_unsub_food_token_listener") and self._unsub_food_token_listener is not None:
+                self._unsub_food_token_listener()
+                self._unsub_food_token_listener = None
+
+        for entry in hass.config_entries.async_entries("samsung_familyhub_fridge"):
+            entry.async_on_unload(_unsubscribe)
 
         # State change listener to dynamically reload the integration when the PAT changes.
         # This recovers the integration from ConfigEntryAuthFailed states automatically.
@@ -132,6 +203,9 @@ class DataCoordinator(DataUpdateCoordinator):
                 if success:
                     self.last_updated_at = time.time()
                     self.last_file_ids = new_ids
+                    # Trigger food inventory sync upon door close / new camera snapshot upload
+                    if getattr(self, "food_coordinator", None) is not None:
+                        self.food_coordinator.async_trigger_door_close_sync(12)
                 else:
                     _LOGGER.warning(
                         "download_images returned no successes — will retry "
@@ -149,6 +223,8 @@ class DataCoordinator(DataUpdateCoordinator):
                     self.api.should_update,
                     self.api.get_file_ids(),
                 )
+            # Reset failure count on success
+            self._consecutive_failures = 0
         except AuthenticationError as err:
             state = self._hass.states.get(_TOKEN_ENTITY)
             if state is not None and state.state in ("unknown", "unavailable"):
@@ -165,6 +241,24 @@ class DataCoordinator(DataUpdateCoordinator):
             raise ConfigEntryAuthFailed(
                 "SmartThings token expired or is invalid. "
                 "Please re-authenticate with a new token."
+            ) from err
+        except Exception as err:
+            self._consecutive_failures += 1
+            if self._consecutive_failures < self._max_consecutive_failures:
+                _LOGGER.debug(
+                    "Transient error fetching fridge data (%d/%d): %s. Retrying on next poll.",
+                    self._consecutive_failures,
+                    self._max_consecutive_failures,
+                    err,
+                )
+                return self.data
+            _LOGGER.error(
+                "SmartThings fridge communication failed %d consecutive times: %s",
+                self._consecutive_failures,
+                err,
+            )
+            raise UpdateFailed(
+                f"SmartThings API failed {self._consecutive_failures} consecutive times: {err}"
             ) from err
 
 
@@ -571,3 +665,202 @@ class FamilyHub:
             r.status_code,
             r.text[:300],
         )
+
+
+class SamsungFoodClient:
+    """Client for querying Samsung Food (Whisk) AI Food Manager inventory."""
+
+    def __init__(self, hass: HomeAssistant, token: str | None = None) -> None:
+        self.hass = hass
+        self._configured_token = token
+        self._cached_inventory: dict | None = None
+        self._session: requests.Session | None = None
+
+    def _get_session(self) -> requests.Session:
+        """Get or create requests.Session with retries."""
+        if self._session is None:
+            self._session = requests.Session()
+        return self._session
+
+    def _get_file_token_sync(self) -> str | None:
+        """Synchronously check file paths on disk in executor thread."""
+        candidate_paths = [
+            self.hass.config.path(FOOD_TOKEN_FILE),
+            self.hass.config.path(f"custom_components/samsung_familyhub_fridge/{FOOD_TOKEN_FILE}"),
+            f"/config/{FOOD_TOKEN_FILE}",
+            f"/config/custom_components/samsung_familyhub_fridge/{FOOD_TOKEN_FILE}",
+            f"/tmp/{FOOD_TOKEN_FILE}",
+            os.path.join(os.path.dirname(__file__), FOOD_TOKEN_FILE),
+            os.path.join(os.path.dirname(__file__), f"../../scripts/{FOOD_TOKEN_FILE}"),
+            os.path.join(os.path.dirname(__file__), f"../{FOOD_TOKEN_FILE}"),
+        ]
+        for p in candidate_paths:
+            try:
+                if os.path.exists(p):
+                    with open(p, "r", encoding="utf-8") as f:
+                        tok = f.read().strip()
+                        if tok:
+                            _LOGGER.info("SamsungFoodClient: Loaded token from %s", p)
+                            return tok
+            except Exception as err:
+                _LOGGER.debug("Could not read candidate token file %s: %s", p, err)
+
+        return None
+
+    async def async_get_token(self) -> str | None:
+        """Retrieve Whisk/Samsung Food token without blocking the event loop."""
+        if self._configured_token and self._configured_token.strip():
+            return self._configured_token.strip()
+
+        # Check helper entity
+        state = self.hass.states.get(FOOD_TOKEN_ENTITY)
+        if state and state.state not in ("unknown", "unavailable", ""):
+            return state.state.strip()
+
+        # Check file locations in executor thread
+        return await self.hass.async_add_executor_job(self._get_file_token_sync)
+
+    async def async_has_token(self) -> bool:
+        """Check if a valid token is available without blocking."""
+        token = await self.async_get_token()
+        return bool(token)
+
+    def _fetch_food_items_sync(self, token: str) -> dict:
+        """Synchronously fetch all food items from Whisk/Samsung Food API across all pages."""
+        clean_auth = token if token.startswith("Bearer ") or token.startswith("Token ") else f"Bearer {token}"
+        raw_token = token.replace("Bearer ", "").replace("Token ", "").strip()
+
+        headers = {
+            "Authorization": clean_auth,
+            "x-whisk-token": raw_token,
+            "Accept": "application/json",
+        }
+
+        all_items = []
+        after_cursor = ""
+        page_num = 1
+        fetch_error = None
+        session = self._get_session()
+
+        _LOGGER.debug("SamsungFoodClient: Fetching active food inventory from Samsung Food API...")
+
+        while True:
+            params = {}
+            if after_cursor:
+                params["paging.cursors.after"] = after_cursor
+
+            try:
+                r = session.get(WHISK_FOODLIST_API, headers=headers, params=params, timeout=25)
+                if not r.ok:
+                    _LOGGER.warning("Samsung Food API page %d returned HTTP %s: %s", page_num, r.status_code, r.text[:200])
+                    fetch_error = f"HTTP {r.status_code}"
+                    break
+
+                data = r.json()
+                items = data.get("items", [])
+                all_items.extend(items)
+                _LOGGER.debug("Samsung Food API page %d: %d items (total so far: %d)", page_num, len(items), len(all_items))
+
+                paging = data.get("paging", {})
+                next_cursor = paging.get("cursors", {}).get("after")
+                if next_cursor and next_cursor != after_cursor and len(items) > 0:
+                    after_cursor = next_cursor
+                    page_num += 1
+                else:
+                    break
+            except Exception as err:
+                _LOGGER.warning("Error fetching Samsung Food items on page %d (%s).", page_num, err)
+                fetch_error = str(err)
+                break
+
+        # If fetch encountered an error and we have cached data, retain cache
+        if fetch_error:
+            if self._cached_inventory and self._cached_inventory.get("items"):
+                _LOGGER.info(
+                    "SamsungFoodClient: Transient fetch error (%s). Preserving %d previously-cached active items.",
+                    fetch_error,
+                    self._cached_inventory.get("total_items", 0),
+                )
+                return self._cached_inventory
+            if not all_items:
+                raise UpdateFailed(f"Failed to fetch Samsung Food items: {fetch_error}")
+
+        # Filter active items
+        active_items = []
+        for itm in all_items:
+            content = itm.get("content", {})
+            status = content.get("presence_status", "")
+            is_consumed = bool(content.get("consumed_at")) or bool(content.get("deleted_at")) or status == "PRESENCE_STATUS_CONSUMED"
+
+            if not is_consumed or status in ("PRESENCE_STATUS_EXISTING", "PRESENCE_STATUS_PRESENT"):
+                active_items.append({
+                    "id": itm.get("id"),
+                    "name": content.get("name") or "Unnamed Food Item",
+                    "presence_status": status,
+                    "location": content.get("location"),
+                    "added_at": content.get("added_at"),
+                    "expiration_date": content.get("expiration_date") or content.get("days_to_expire"),
+                    "image_url": content.get("image_url") or content.get("photo_url"),
+                    "ai_generated": content.get("ai_generated", False),
+                    "ai_suggested_names": content.get("ai_suggested_names", []),
+                })
+
+        _LOGGER.info("SamsungFoodClient: Sync complete. %d active items found (out of %d total account items).", len(active_items), len(all_items))
+
+        result = {
+            "total_items": len(active_items),
+            "last_synced": datetime.now(timezone.utc).isoformat(),
+            "items": active_items,
+        }
+        self._cached_inventory = result
+        return result
+
+    async def async_get_active_food_items(self) -> dict:
+        """Fetch all active food items asynchronously."""
+        token = await self.async_get_token()
+        if not token:
+            if self._cached_inventory:
+                return self._cached_inventory
+            return {"total_items": 0, "last_synced": None, "items": []}
+
+        return await self.hass.async_add_executor_job(self._fetch_food_items_sync, token)
+
+
+class SamsungFoodCoordinator(DataUpdateCoordinator):
+    """Coordinator for syncing Samsung Food AI Food Manager inventory."""
+
+    def __init__(self, hass: HomeAssistant, client: SamsungFoodClient) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name="Samsung Food Inventory Refresher",
+            update_interval=timedelta(seconds=DEFAULT_FOOD_UPDATE_INTERVAL),
+        )
+        self.client = client
+        self._delay_task: asyncio.Task | None = None
+
+    async def _async_update_data(self) -> dict:
+        """Fetch updated active food inventory."""
+        try:
+            return await self.client.async_get_active_food_items()
+        except Exception as err:
+            raise UpdateFailed(f"Failed to fetch Samsung Food inventory: {err}") from err
+
+    def async_trigger_door_close_sync(self, delay_seconds: int = 12) -> None:
+        """Schedule a delayed sync following a door-close event."""
+        if self._delay_task and not self._delay_task.done():
+            self._delay_task.cancel()
+
+        async def _delayed_refresh():
+            try:
+                _LOGGER.debug("Door close detected; waiting %ds for AI vision to commit...", delay_seconds)
+                await asyncio.sleep(delay_seconds)
+                _LOGGER.info("Triggering food inventory refresh after door close...")
+                await self.async_request_refresh()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                _LOGGER.warning("Error in door-close food sync: %s", e)
+
+        self._delay_task = self.hass.async_create_task(_delayed_refresh())
+

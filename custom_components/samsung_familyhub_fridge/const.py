@@ -27,3 +27,10 @@ CONF_SAMSUNG_SIGNIN_CLIENT_SECRET = "samsung_signin_client_secret"
 
 # Domain of the HA core SmartThings integration we piggyback on
 SMARTTHINGS_DOMAIN = "smartthings"
+
+# Samsung Food (Whisk) AI Food Manager constants
+CONF_FOOD_TOKEN = "food_token"
+WHISK_FOODLIST_API = "https://api.whisk.com/foodlist/v2"
+FOOD_TOKEN_ENTITY = "input_text.samsung_food_token"
+FOOD_TOKEN_FILE = "samsung_food_token.txt"
+DEFAULT_FOOD_UPDATE_INTERVAL = 600  # 10 minutes

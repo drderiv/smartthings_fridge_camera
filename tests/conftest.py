@@ -151,6 +151,7 @@ def _headless_login(email: str, password: str, signin_id: str, signin_secret: st
 
 def _make_module(name, **attrs):
     mod = types.ModuleType(name)
+    mod.__path__ = []
     for k, v in attrs.items():
         setattr(mod, k, v)
     return mod
@@ -175,12 +176,37 @@ class _ServiceCall:
         self.data = data or {}
 
 
+class _ConfigEntriesManager:
+    def __init__(self):
+        self._entries = []
+
+    def async_entries(self, domain=None):
+        if domain is None:
+            return list(self._entries)
+        return [e for e in self._entries if getattr(e, "domain", domain) == domain]
+
+    def async_update_entry(self, entry, data=None):
+        if data is not None:
+            entry.data = data
+
+    def async_schedule_reload(self, entry_id):
+        pass
+
+
 class _HomeAssistant:
     """Minimal stub of homeassistant.core.HomeAssistant."""
 
     def __init__(self):
         self.async_add_executor_job = AsyncMock(side_effect=self._run_sync)
         self.services = _ServiceRegistry()
+        self.config_entries = _ConfigEntriesManager()
+        self.states = MagicMock()
+        self.states.get = MagicMock(return_value=None)
+        self.data = {}
+
+    def add_job(self, target, *args):
+        if callable(target):
+            return target(*args)
 
     async def _run_sync(self, func, *args):
         return func(*args)
@@ -339,6 +365,10 @@ ha_helpers_typing = _make_module(
     ConfigType=dict,
     DiscoveryInfoType=dict,
 )
+ha_helpers_event = _make_module(
+    "homeassistant.helpers.event",
+    async_track_state_change_event=MagicMock(),
+)
 
 
 class _OAuth2SessionStub:
@@ -415,6 +445,7 @@ _modules = {
     "homeassistant.helpers.entity_platform": ha_helpers_entity_platform,
     "homeassistant.helpers.dispatcher": ha_helpers_dispatcher,
     "homeassistant.helpers.typing": ha_helpers_typing,
+    "homeassistant.helpers.event": ha_helpers_event,
     "homeassistant.helpers.config_entry_oauth2_flow": ha_helpers_oauth2,
     "homeassistant.components": ha_components,
     "homeassistant.components.camera": ha_components_camera,

@@ -35,8 +35,10 @@ import sys
 import os
 import webbrowser
 
-# Allow importing the component from the repo root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# conftest installs full HA stubs so scripts run standalone without Home Assistant
+import tests.conftest  # noqa: F401
 
 from custom_components.samsung_familyhub_fridge.auth import SmartThingsOAuth
 

@@ -1,19 +1,21 @@
 {
   "domain": "samsung_familyhub_fridge",
-  "name": "Samsung FamilyHub Fridge",
-  "version": "0.1.0",
+  "name": "Samsung FamilyHub Fridge & AI Food Manager",
+  "version": "1.0.0",
   "codeowners": [
+    "@drderiv",
+    "@TryTryAgain",
     "@ibielopolskyi",
     "@nachtschatt3n"
   ],
   "config_flow": true,
   "dependencies": [],
   "after_dependencies": ["smartthings"],
-  "documentation": "https://github.com/ibielopolskyi/smartthings_fridge_camera",
+  "documentation": "https://github.com/drderiv/smartthings_fridge_camera",
   "integration_type": "hub",
   "homekit": {},
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/ibielopolskyi/smartthings_fridge_camera/issues",
+  "issue_tracker": "https://github.com/drderiv/smartthings_fridge_camera/issues",
   "requirements": [
     "requests"
   ],

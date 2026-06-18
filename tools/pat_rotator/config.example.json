@@ -1,0 +1,6 @@
+{
+  "samsung_email": "YOUR_SAMSUNG_EMAIL",
+  "samsung_password": "YOUR_SAMSUNG_PASSWORD",
+  "port": 8765,
+  "rotation_interval_hours": 23
+}
