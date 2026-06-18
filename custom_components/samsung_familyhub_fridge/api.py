@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
 )
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 import requests
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import CID, DEFAULT_TIMEOUT
 
@@ -18,6 +19,9 @@ if TYPE_CHECKING:
     from homeassistant.helpers import config_entry_oauth2_flow
 
 _LOGGER = logging.getLogger(__name__)
+
+# Helper entity that the PAT rotator writes the new token to.
+_TOKEN_ENTITY = "input_text.smartthings_pat"
 
 
 class AuthenticationError(Exception):
@@ -37,8 +41,70 @@ class DataCoordinator(DataUpdateCoordinator):
         self.last_file_ids = []
         self.last_updated_at = None
 
+        # State change listener to dynamically reload the integration when the PAT changes.
+        # This recovers the integration from ConfigEntryAuthFailed states automatically.
+        def _handle_token_change(event):
+            new_state = event.data.get("new_state")
+            if new_state is None or new_state.state in ("unknown", "unavailable", ""):
+                return
+            new_token = new_state.state.strip()
+            if new_token and new_token != self.api.token:
+                _LOGGER.info(
+                    "Detected changed SmartThings PAT in %s. Updating config entry and reloading integration.",
+                    _TOKEN_ENTITY
+                )
+                self.api.update_token(new_token)
+
+                def _update_and_reload(e, t):
+                    new_data = {**e.data, "token": t}
+                    self._hass.config_entries.async_update_entry(e, data=new_data)
+                    self._hass.config_entries.async_schedule_reload(e.entry_id)
+
+                entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
+                for entry in entries:
+                    self._hass.add_job(_update_and_reload, entry, new_token)
+
+        self._unsub_token_listener = async_track_state_change_event(
+            hass,
+            [_TOKEN_ENTITY],
+            _handle_token_change,
+        )
+
+        def _unsubscribe():
+            if hasattr(self, "_unsub_token_listener") and self._unsub_token_listener is not None:
+                self._unsub_token_listener()
+                self._unsub_token_listener = None
+
+        for entry in hass.config_entries.async_entries("samsung_familyhub_fridge"):
+            entry.async_on_unload(_unsubscribe)
+
     async def _async_update_data(self):
         """Fetch data from API endpoint."""
+        
+        # ── Dynamic Token Refresh & Persistence ────────────────────────────
+        # If input_text.smartthings_pat holds a valid non-empty value, we sync
+        # it into self.api.token and write it back to the config entry on disk.
+        # This keeps the integration functional without restarts and avoids
+        # "Re-authenticate" repair flows.
+        state = self._hass.states.get(_TOKEN_ENTITY)
+        if state and state.state not in ("unknown", "unavailable", ""):
+            live_token = state.state.strip()
+            if live_token and live_token != self.api.token:
+                _LOGGER.debug(
+                    "Picked up refreshed SmartThings PAT from %s", 
+                    _TOKEN_ENTITY
+                )
+                self.api.update_token(live_token)
+                
+                # Permanently update config entry data on disk so restarts sync cleanly
+                entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
+                for entry in entries:
+                    if entry.data.get("token") != live_token:
+                        new_data = {**entry.data, "token": live_token}
+                        self._hass.config_entries.async_update_entry(entry, data=new_data)
+                        _LOGGER.info("Updated config entry on disk with new SmartThings PAT")
+        # ───────────────────────────────────────────────────────────────────
+
         try:
             # OAuth mode: refresh the access token (if close to expiry) BEFORE
             # any API call. No-op for PAT mode.
@@ -84,6 +150,18 @@ class DataCoordinator(DataUpdateCoordinator):
                     self.api.get_file_ids(),
                 )
         except AuthenticationError as err:
+            state = self._hass.states.get(_TOKEN_ENTITY)
+            if state is not None and state.state in ("unknown", "unavailable"):
+                _LOGGER.warning(
+                    "SmartThings auth failed, but helper entity %s is not ready yet (%s). "
+                    "Postponing setup...",
+                    _TOKEN_ENTITY,
+                    state.state,
+                )
+                raise ConfigEntryNotReady(
+                    f"Waiting for helper entity {_TOKEN_ENTITY} to restore state."
+                ) from err
+
             raise ConfigEntryAuthFailed(
                 "SmartThings token expired or is invalid. "
                 "Please re-authenticate with a new token."
@@ -493,4 +571,3 @@ class FamilyHub:
             r.status_code,
             r.text[:300],
         )
-
