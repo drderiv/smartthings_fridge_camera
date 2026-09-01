@@ -65,7 +65,7 @@
             },
             "reauth_confirm": {
                 "title": "Re-authenticate SmartThings",
-                "description": "Your SmartThings token has expired. Please enter a new token from https://account.smartthings.com/tokens",
+                "description": "Your SmartThings token has expired. Please enter a new Personal Access Token.",
                 "data": {
                     "token": "New SmartThings Token"
                 }
