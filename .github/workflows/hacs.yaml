@@ -4,8 +4,6 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * *"
 
 jobs:
   validate:
@@ -19,3 +17,6 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

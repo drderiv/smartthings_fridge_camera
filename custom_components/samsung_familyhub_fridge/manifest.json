@@ -9,16 +9,13 @@
     "@nachtschatt3n"
   ],
   "config_flow": true,
-  "dependencies": [],
   "after_dependencies": ["smartthings"],
   "documentation": "https://github.com/drderiv/smartthings_fridge_camera",
   "integration_type": "hub",
-  "homekit": {},
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/drderiv/smartthings_fridge_camera/issues",
   "requirements": [
-    "requests"
-  ],
-  "ssdp": [],
-  "zeroconf": []
+    "requests>=2.28.0"
+  ]
 }
+
