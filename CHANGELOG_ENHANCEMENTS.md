@@ -26,7 +26,7 @@ For Samsung Family Hub refrigerators equipped with the internal AI food vision c
   * **Attributes**:
     * `total_items`: Total count of active items currently in the fridge.
     * `last_synced`: ISO timestamp of the last *successful* cloud synchronization.
-    * `items`: Rich array of item objects including `name`, `location`, `expiration_date`, `added_at` (epoch timestamp), `image_url` (high-resolution FoodDB catalog stock photography), and `ai_suggested_names`.
+    * `items`: Lean array of active item objects (`name`, `added_at` epoch timestamp, and optional `expiration_date` and `image_url` thumbnail), economized to stay safely under Home Assistant's 16KB database attribute threshold.
 * **Door-Close Triggered Sync**:
   * Connected in [`custom_components/samsung_familyhub_fridge/api.py`](custom_components/samsung_familyhub_fridge/api.py): When door contact sensors close and camera snapshot file IDs refresh, a delayed (~12s) background refresh is triggered to allow Samsung's cloud vision models to commit newly detected items.
 * **Resilient In-Memory Caching**:

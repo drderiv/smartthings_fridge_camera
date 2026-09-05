@@ -750,7 +750,7 @@ class SamsungFoodClient:
                 params["paging.cursors.after"] = after_cursor
 
             try:
-                r = session.get(WHISK_FOODLIST_API, headers=headers, params=params, timeout=25)
+                r = session.get(WHISK_FOODLIST_API, headers=headers, params=params, timeout=30)
                 if not r.ok:
                     _LOGGER.warning("Samsung Food API page %d returned HTTP %s: %s", page_num, r.status_code, r.text[:200])
                     fetch_error = f"HTTP {r.status_code}"
@@ -785,7 +785,7 @@ class SamsungFoodClient:
             if not all_items:
                 raise UpdateFailed(f"Failed to fetch Samsung Food items: {fetch_error}")
 
-        # Filter active items
+        # Filter active items (economizing payload to stay well under Home Assistant's 16KB attribute limit)
         active_items = []
         for itm in all_items:
             content = itm.get("content", {})
@@ -794,15 +794,10 @@ class SamsungFoodClient:
 
             if not is_consumed or status in ("PRESENCE_STATUS_EXISTING", "PRESENCE_STATUS_PRESENT"):
                 active_items.append({
-                    "id": itm.get("id"),
                     "name": content.get("name") or "Unnamed Food Item",
-                    "presence_status": status,
-                    "location": content.get("location"),
-                    "added_at": content.get("added_at"),
-                    "expiration_date": content.get("expiration_date") or content.get("days_to_expire"),
-                    "image_url": content.get("image_url") or content.get("photo_url"),
-                    "ai_generated": content.get("ai_generated", False),
-                    "ai_suggested_names": content.get("ai_suggested_names", []),
+                    "added_at": content.get("added_at") or 0,
+                    "expiration_date": content.get("expiration_date") or content.get("days_to_expire") or None,
+                    "image_url": content.get("image_url") or content.get("photo_url") or None,
                 })
 
         _LOGGER.info("SamsungFoodClient: Sync complete. %d active items found (out of %d total account items).", len(active_items), len(all_items))

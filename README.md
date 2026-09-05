@@ -188,7 +188,7 @@ views:
 
           ---
 
-          | Item | Food Name &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Days Old |
+          | Item | Food Name &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Days Old |
           | :---: | :--- | :---: |
           {% set now_ts = as_timestamp(now()) -%}
           {% for item in (state_attr('sensor.fridge_food_inventory', 'items') or []) | sort(attribute='added_at', reverse=true) -%}
@@ -223,7 +223,7 @@ type: markdown
 title: 🍎 Fridge Food Gallery
 content: >
   <div style="display: flex; flex-wrap: wrap; gap: 12px; justify-content: center;">
-  {% for item in state_attr('sensor.samsung_fridge_food_inventory', 'items') %}
+  {% for item in state_attr('sensor.fridge_food_inventory', 'items') or [] %}
     <div style="text-align: center; width: 85px; background: rgba(255,255,255,0.05); padding: 8px; border-radius: 10px;">
       {% if item.image_url %}
         <img src="{{ item.image_url }}" width="60" height="60" style="border-radius: 8px; object-fit: cover;"/>
