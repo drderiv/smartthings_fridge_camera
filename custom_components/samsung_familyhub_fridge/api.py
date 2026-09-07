@@ -13,7 +13,7 @@ from homeassistant.helpers.update_coordinator import (
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 import requests
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
@@ -56,11 +56,7 @@ class DataCoordinator(DataUpdateCoordinator):
 
         # State change listener to dynamically reload the integration when the PAT changes.
         # This recovers the integration from ConfigEntryAuthFailed states automatically.
-        async def _async_update_and_reload(e, t):
-            new_data = {**e.data, "token": t}
-            self._hass.config_entries.async_update_entry(e, data=new_data)
-            await self._hass.config_entries.async_reload(e.entry_id)
-
+        @callback
         def _handle_token_change(event):
             new_state = event.data.get("new_state")
             if new_state is None or new_state.state in ("unknown", "unavailable", ""):
@@ -69,13 +65,15 @@ class DataCoordinator(DataUpdateCoordinator):
             if new_token and new_token != self.api.token:
                 _LOGGER.info(
                     "Detected changed SmartThings PAT in %s. Updating config entry and reloading integration.",
-                    _TOKEN_ENTITY
+                    _TOKEN_ENTITY,
                 )
                 self.api.update_token(new_token)
 
                 entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
                 for entry in entries:
-                    self._hass.add_job(_async_update_and_reload, entry, new_token)
+                    new_data = {**entry.data, "token": new_token}
+                    self._hass.config_entries.async_update_entry(entry, data=new_data)
+                    self._hass.config_entries.async_schedule_reload(entry.entry_id)
 
         self._unsub_token_listener = async_track_state_change_event(
             hass,
@@ -83,6 +81,7 @@ class DataCoordinator(DataUpdateCoordinator):
             _handle_token_change,
         )
 
+        @callback
         def _handle_food_token_change(event):
             new_state = event.data.get("new_state")
             if new_state is None or new_state.state in ("unknown", "unavailable", ""):
@@ -93,7 +92,7 @@ class DataCoordinator(DataUpdateCoordinator):
                     "Detected updated Samsung Food token in %s. Refreshing food inventory...",
                     FOOD_TOKEN_ENTITY,
                 )
-                self._hass.add_job(self.food_coordinator.async_request_refresh)
+                self.food_coordinator.async_request_refresh()
 
         self._unsub_food_token_listener = async_track_state_change_event(
             hass,
@@ -108,43 +107,6 @@ class DataCoordinator(DataUpdateCoordinator):
             if hasattr(self, "_unsub_food_token_listener") and self._unsub_food_token_listener is not None:
                 self._unsub_food_token_listener()
                 self._unsub_food_token_listener = None
-
-        for entry in hass.config_entries.async_entries("samsung_familyhub_fridge"):
-            entry.async_on_unload(_unsubscribe)
-
-        # State change listener to dynamically reload the integration when the PAT changes.
-        # This recovers the integration from ConfigEntryAuthFailed states automatically.
-        def _handle_token_change(event):
-            new_state = event.data.get("new_state")
-            if new_state is None or new_state.state in ("unknown", "unavailable", ""):
-                return
-            new_token = new_state.state.strip()
-            if new_token and new_token != self.api.token:
-                _LOGGER.info(
-                    "Detected changed SmartThings PAT in %s. Updating config entry and reloading integration.",
-                    _TOKEN_ENTITY
-                )
-                self.api.update_token(new_token)
-
-                def _update_and_reload(e, t):
-                    new_data = {**e.data, "token": t}
-                    self._hass.config_entries.async_update_entry(e, data=new_data)
-                    self._hass.config_entries.async_schedule_reload(e.entry_id)
-
-                entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
-                for entry in entries:
-                    self._hass.add_job(_update_and_reload, entry, new_token)
-
-        self._unsub_token_listener = async_track_state_change_event(
-            hass,
-            [_TOKEN_ENTITY],
-            _handle_token_change,
-        )
-
-        def _unsubscribe():
-            if hasattr(self, "_unsub_token_listener") and self._unsub_token_listener is not None:
-                self._unsub_token_listener()
-                self._unsub_token_listener = None
 
         for entry in hass.config_entries.async_entries("samsung_familyhub_fridge"):
             entry.async_on_unload(_unsubscribe)
