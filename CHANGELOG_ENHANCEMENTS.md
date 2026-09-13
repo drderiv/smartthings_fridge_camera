@@ -10,7 +10,7 @@ This document details the major functional enhancements, architectural upgrades,
 | :--- | :--- | :--- |
 | **Food Inventory Tracking** | ❌ Not supported | ✅ **AI Food Manager (`sensor.fridge_food_inventory`)** with names, stock photo thumbnails, locations, and expiration dates |
 | **Inventory Sync Trigger** | ❌ None | ✅ **Automatic door-close triggered sync** with cloud commit delay + 10-minute periodic polling |
-| **PAT Lifetime & Rotation** | ⚠️ Expired after 24h (broke PAT mode) | ✅ **Automated 23-hour PAT rotator microservice** with local REST server and zero-downtime updates |
+| **Token Lifetime & Rotation** | ⚠️ Expired after 24h (PAT) / ~60d (Food) | ✅ **Automated Dual-Token Rotator microservice** (PAT every 23h + Samsung Food every 28d) with local REST server and zero-downtime updates |
 | **Dynamic Token Reload** | ❌ Required manual re-auth / reload | ✅ **Dynamic listeners** on `input_text.smartthings_pat` and `input_text.samsung_food_token` (zero restarts) |
 | **Async Architecture** | ⚠️ Synchronous file reads on startup | ✅ Fully non-blocking async executor dispatch and resilient in-memory caching |
 | **Dashboard UI** | 📷 Basic camera entity cards | 🥗 **Pixel-perfect 2-column Dashboard Template** (Food table + aspect-ratio stacked door cameras) |
@@ -38,15 +38,18 @@ For Samsung Family Hub refrigerators equipped with the internal AI food vision c
 
 ---
 
-## 🔑 2. Automated SmartThings PAT Rotation Microservice
+## 🔑 2. Automated Dual-Token Rotation Microservice (PAT + Samsung Food)
 
-On December 30, 2024, Samsung deprecated indefinite SmartThings Personal Access Tokens (PATs) and enforced a strict 24-hour expiration limit, breaking legacy PAT-based integrations.
+To achieve continuous, 100% autonomous operation without human intervention or token expirations, this integration includes a standalone background companion microservice:
 
 * **Standalone Portable Package** (intended to be run on a Linux server outside of Home Assistant): Located in [`tools/pat_rotator/`](tools/pat_rotator/)
-  * **Automated Headless Renewal**: [`tools/pat_rotator/generate_pat.py`](tools/pat_rotator/generate_pat.py) uses Playwright browser automation with saved session cookies (`smartthings_session.json`) to log into `account.smartthings.com/tokens` and mint fresh 24-hour tokens with full device scopes every 23 hours.
-  * **Built-in REST Microservice**: [`tools/pat_rotator/main.py`](tools/pat_rotator/main.py) hosts a lightweight HTTP server on port `8765` serving `GET http://<SERVER_IP>:8765/pat`.
-  * **Built-in File Logging**: Direct writes to `rotator.log` (no shell redirection needed).
-  * **Automated Weekly Maintenance**: Background thread prunes `rotator.log` every **Sunday at midnight** (00:00:00) down to the most recent 100 lines.
+  * **Automated SmartThings PAT Renewal**: [`tools/pat_rotator/generate_pat.py`](tools/pat_rotator/generate_pat.py) uses Playwright browser automation with saved session cookies (`smartthings_session.json`) to log into `account.smartthings.com/tokens` and mint fresh 24-hour tokens with full device scopes every **23 hours**.
+  * **Automated Samsung Food Token Renewal**: [`tools/pat_rotator/generate_food_token.py`](tools/pat_rotator/generate_food_token.py) uses Playwright browser automation with the same saved session cookies to authenticate into `app.samsungfood.com`, extract the active Whisk/Samsung Food token, and rotate it every **28 days** (preventing 30-to-90-day Whisk token expiration).
+  * **Built-in REST Microservice**: [`tools/pat_rotator/main.py`](tools/pat_rotator/main.py) hosts a lightweight HTTP server on port `8765` serving:
+    * `GET http://<SERVER_IP>:8765/pat` ➔ Active SmartThings PAT.
+    * `GET http://<SERVER_IP>:8765/food_token` ➔ Active Samsung Food (Whisk) Token.
+    * `GET http://<SERVER_IP>:8765/tokens` ➔ Combined status payload with both tokens.
+  * **Built-in File Logging**: Direct writes to `rotator.log` with automatic weekly pruning every **Sunday at midnight** (00:00:00) down to the most recent 100 lines.
   * **Automated Setup**: [`tools/pat_rotator/setup.sh`](tools/pat_rotator/setup.sh) provides 1-command virtual environment creation, dependency installation, and Playwright Chromium setup.
 
 ---

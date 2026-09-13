@@ -157,12 +157,17 @@ For Samsung Family Hub refrigerators equipped with the internal AI food camera /
 
 ### Setup (Opt-In):
 
-1. Run the Samsung Food authentication extractor on a machine with a browser (or headless):
-   ```bash
-   python3 scripts/dump_samsung_food.py --config config.json --session smartthings_session.json
-   ```
-2. Place the generated `samsung_food_token.txt` in your Home Assistant `/config` or integration directory (or configure the `input_text.samsung_food_token` helper entity).
-3. The integration will automatically detect the token and register `sensor.samsung_fridge_food_inventory`. If no token is provided, the sensor is omitted so non-AI fridges remain uncluttered.
+* **Method 1: Fully Automated Continuous Operation (Recommended)**:
+  Run the companion **Dual Token Rotator microservice** located in [`tools/pat_rotator/`](tools/pat_rotator/README.md). It runs on any Linux machine or server, automatically rotating your **SmartThings PAT (every 23 hours)** and **Samsung Food Token (every 28 days)** in the background and serving them to Home Assistant over local REST endpoints with zero downtime.
+
+* **Method 2: One-Time Manual Token Generation**:
+  1. Run the Samsung Food authentication extractor on a machine with a browser (or headless):
+     ```bash
+     python3 scripts/dump_samsung_food.py --config config.json --session smartthings_session.json
+     ```
+  2. Place the generated `samsung_food_token.txt` in your Home Assistant `/config` directory or paste into the `input_text.samsung_food_token` helper entity.
+
+The integration automatically detects the token and registers `sensor.fridge_food_inventory`. If no token is provided, the sensor is omitted so non-AI fridges remain uncluttered.
 
 ---
 
