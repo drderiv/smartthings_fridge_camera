@@ -92,7 +92,7 @@ class DataCoordinator(DataUpdateCoordinator):
                     "Detected updated Samsung Food token in %s. Refreshing food inventory...",
                     FOOD_TOKEN_ENTITY,
                 )
-                self.food_coordinator.async_request_refresh()
+                self._hass.async_create_task(self.food_coordinator.async_request_refresh())
 
         self._unsub_food_token_listener = async_track_state_change_event(
             hass,
