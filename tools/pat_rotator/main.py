@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Unified Runner for SmartThings PAT Rotator & REST Server.
+"""Unified Runner for SmartThings PAT & Samsung Food Token Rotator & REST Server.
 
-Runs the local HTTP REST server on port 8765 and automatically triggers
-PAT generation every N hours (default 23 hours) in the background.
+Runs the local HTTP REST server on port 8765 and automatically triggers:
+1. SmartThings PAT generation every N hours (default 23 hours).
+2. Samsung Food (Whisk) token generation every N days (default 28 days).
 Includes built-in file logging and automated weekly log pruning.
 """
 
@@ -15,12 +16,14 @@ import threading
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Import local generator
+# Import local generators
 from generate_pat import generate_pat
+from generate_food_token import generate_food_token
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 TOKEN_FILE = os.path.join(BASE_DIR, "smartthings_pat.txt")
+FOOD_TOKEN_FILE = os.path.join(BASE_DIR, "samsung_food_token.txt")
 SESSION_FILE = os.path.join(BASE_DIR, "smartthings_session.json")
 LOG_FILE = os.path.join(BASE_DIR, "rotator.log")
 
@@ -51,7 +54,6 @@ def prune_log_file(log_file: str = LOG_FILE, max_lines: int = 100) -> None:
     if not os.path.exists(log_file):
         return
     try:
-        # Flush existing file handlers before reading/writing
         for handler in logging.root.handlers:
             if isinstance(handler, logging.FileHandler):
                 handler.flush()
@@ -77,7 +79,6 @@ def weekly_log_cleanup_loop(log_file: str = LOG_FILE, max_lines: int = 100) -> N
     """Background thread to prune the log file every Sunday at midnight."""
     while True:
         now = datetime.now()
-        # Calculate days until next Sunday (Python weekday: Monday=0, Sunday=6)
         days_ahead = (6 - now.weekday()) % 7
         next_sunday_midnight = (now + timedelta(days=days_ahead)).replace(
             hour=0, minute=0, second=0, microsecond=0
@@ -99,27 +100,83 @@ def weekly_log_cleanup_loop(log_file: str = LOG_FILE, max_lines: int = 100) -> N
             _LOGGER.warning("Error during scheduled log cleanup: %s", e)
 
 
+def is_token_fresh(token_file: str, max_age_days: int) -> bool:
+    """Check if a token file exists, is non-empty, and newer than max_age_days."""
+    if not os.path.exists(token_file):
+        return False
+    try:
+        with open(token_file, "r", encoding="utf-8") as f:
+            tok = f.read().strip()
+        if not tok:
+            return False
+        mtime = os.path.getmtime(token_file)
+        age_seconds = time.time() - mtime
+        return age_seconds < (max_age_days * 86400)
+    except Exception:
+        return False
+
+
 class PATHandler(BaseHTTPRequestHandler):
+    """HTTP request handler serving PAT and Samsung Food tokens."""
+
+    def _read_file_token(self, filepath: str) -> str | None:
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    tok = f.read().strip()
+                if tok:
+                    return tok
+            except Exception as err:
+                _LOGGER.error("Error reading %s: %s", filepath, err)
+        return None
+
     def do_GET(self):
+        # 1. SmartThings PAT endpoint
         if self.path in ("/pat", "/pat/"):
-            if os.path.exists(TOKEN_FILE):
-                try:
-                    with open(TOKEN_FILE, "r") as f:
-                        token = f.read().strip()
-                    if token:
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        self.wfile.write(json.dumps({"token": token, "status": "ok"}).encode("utf-8"))
-                        _LOGGER.info("Served PAT to client %s", self.client_address[0])
-                        return
-                except Exception as err:
-                    _LOGGER.error("Error reading token file: %s", err)
+            token = self._read_file_token(TOKEN_FILE)
+            if token:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"token": token, "status": "ok"}).encode("utf-8"))
+                _LOGGER.info("Served SmartThings PAT to client %s", self.client_address[0])
+                return
 
             self.send_response(404)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"error": "No token currently available"}).encode("utf-8"))
+            self.wfile.write(json.dumps({"error": "No SmartThings PAT currently available"}).encode("utf-8"))
+
+        # 2. Samsung Food Token endpoint
+        elif self.path in ("/food_token", "/food_token/"):
+            token = self._read_file_token(FOOD_TOKEN_FILE)
+            if token:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"token": token, "status": "ok"}).encode("utf-8"))
+                _LOGGER.info("Served Samsung Food token to client %s", self.client_address[0])
+                return
+
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "No Samsung Food token currently available"}).encode("utf-8"))
+
+        # 3. Combined Tokens endpoint
+        elif self.path in ("/tokens", "/tokens/"):
+            pat = self._read_file_token(TOKEN_FILE)
+            food_tok = self._read_file_token(FOOD_TOKEN_FILE)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "pat": pat,
+                "food_token": food_tok,
+                "status": "ok" if (pat or food_tok) else "empty",
+            }).encode("utf-8"))
+            _LOGGER.info("Served combined tokens to client %s", self.client_address[0])
+
         else:
             self.send_response(404)
             self.send_header("Content-Type", "text/plain")
@@ -130,9 +187,8 @@ class PATHandler(BaseHTTPRequestHandler):
         pass
 
 
-def rotation_loop(email: str, password: str, interval_hours: int = 23):
+def pat_rotation_loop(email: str, password: str, interval_hours: int = 23):
     """Background thread that runs generate_pat periodically."""
-    # Mint token immediately on service startup
     try:
         _LOGGER.info("Executing initial startup PAT generation...")
         new_token = generate_pat(
@@ -168,19 +224,65 @@ def rotation_loop(email: str, password: str, interval_hours: int = 23):
             continue
 
 
+def food_rotation_loop(email: str, password: str, interval_days: int = 28):
+    """Background thread that runs generate_food_token periodically."""
+    # Check if existing token is already fresh
+    if is_token_fresh(FOOD_TOKEN_FILE, interval_days):
+        _LOGGER.info(
+            "Existing Samsung Food token in %s is still fresh (< %d days old). Skipping initial generation.",
+            os.path.basename(FOOD_TOKEN_FILE),
+            interval_days,
+        )
+    else:
+        _LOGGER.info("No fresh Samsung Food token found. Executing startup generation...")
+        try:
+            new_token = generate_food_token(
+                email=email,
+                password=password,
+                output_file=FOOD_TOKEN_FILE,
+                session_file=SESSION_FILE,
+                headless=True,
+            )
+            _LOGGER.info("Samsung Food token successfully generated: %s...", new_token[:8])
+        except Exception as err:
+            _LOGGER.error("Failed to generate Samsung Food token on initial startup: %s", err)
+
+    while True:
+        sleep_seconds = interval_days * 86400
+        _LOGGER.info("Sleeping for %d days until next scheduled Samsung Food token rotation...", interval_days)
+        time.sleep(sleep_seconds)
+
+        try:
+            _LOGGER.info("Executing scheduled %d-day Samsung Food token generation...", interval_days)
+            new_token = generate_food_token(
+                email=email,
+                password=password,
+                output_file=FOOD_TOKEN_FILE,
+                session_file=SESSION_FILE,
+                headless=True,
+            )
+            _LOGGER.info("Samsung Food token successfully updated: %s...", new_token[:8])
+        except Exception as err:
+            _LOGGER.error("Failed to generate Samsung Food token in background loop: %s", err)
+            _LOGGER.info("Will retry in 1 hour...")
+            time.sleep(3600)
+            continue
+
+
 def main():
     if not os.path.exists(CONFIG_FILE):
         _LOGGER.error("Config file not found: %s", CONFIG_FILE)
         _LOGGER.error("Please copy config.example.json to config.json and fill in your Samsung credentials.")
         sys.exit(1)
 
-    with open(CONFIG_FILE, "r") as f:
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         config = json.load(f)
 
     email = config.get("samsung_email")
     password = config.get("samsung_password")
     port = int(config.get("port", 8765))
-    interval_hours = int(config.get("rotation_interval_hours", 23))
+    pat_interval_hours = int(config.get("rotation_interval_hours", 23))
+    food_interval_days = int(config.get("food_rotation_interval_days", 28))
 
     if not email or not password or email == "YOUR_SAMSUNG_EMAIL":
         _LOGGER.error("Please configure 'samsung_email' and 'samsung_password' in config.json")
@@ -194,22 +296,30 @@ def main():
     )
     cleanup_thread.start()
 
-    # Start rotation thread in background
-    rotator_thread = threading.Thread(
-        target=rotation_loop,
-        args=(email, password, interval_hours),
+    # Start PAT rotation thread in background (every 23 hours)
+    pat_thread = threading.Thread(
+        target=pat_rotation_loop,
+        args=(email, password, pat_interval_hours),
         daemon=True,
     )
-    rotator_thread.start()
+    pat_thread.start()
+
+    # Start Food token rotation thread in background (every 28 days)
+    food_thread = threading.Thread(
+        target=food_rotation_loop,
+        args=(email, password, food_interval_days),
+        daemon=True,
+    )
+    food_thread.start()
 
     # Start HTTP server
     server = HTTPServer(("0.0.0.0", port), PATHandler)
     _LOGGER.info("==========================================================")
-    _LOGGER.info(" SmartThings PAT Rotator Server running on port %d", port)
-    _LOGGER.info(" Home Assistant endpoint: http://<SERVER_IP>:%d/pat", port)
-    _LOGGER.info(" Rotation interval: %d hours", interval_hours)
-    _LOGGER.info(" Token file: %s", TOKEN_FILE)
-    _LOGGER.info(" Log file: %s (auto-pruned weekly)", LOG_FILE)
+    _LOGGER.info(" Samsung FamilyHub Dual Token Rotator Server (Port %d)", port)
+    _LOGGER.info(" - SmartThings PAT:      http://<SERVER_IP>:%d/pat (every %dh)", port, pat_interval_hours)
+    _LOGGER.info(" - Samsung Food Token:   http://<SERVER_IP>:%d/food_token (every %dd)", port, food_interval_days)
+    _LOGGER.info(" - Combined Status:      http://<SERVER_IP>:%d/tokens", port)
+    _LOGGER.info(" - Log file:             %s (auto-pruned weekly)", LOG_FILE)
     _LOGGER.info("==========================================================")
 
     try:
