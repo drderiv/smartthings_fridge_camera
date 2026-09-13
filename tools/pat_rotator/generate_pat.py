@@ -16,11 +16,6 @@ import logging
 import argparse
 from playwright.sync_api import sync_playwright
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 _LOGGER = logging.getLogger("pat_generator")
 
 UUID_REGEX = re.compile(

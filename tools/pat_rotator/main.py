@@ -35,6 +35,7 @@ log_formatter = logging.Formatter(
 
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
+root_logger.handlers.clear()
 
 # Console handler
 console_handler = logging.StreamHandler(sys.stdout)
