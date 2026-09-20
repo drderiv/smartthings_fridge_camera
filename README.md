@@ -243,6 +243,15 @@ content: >
 
 ---
 
+## 🔧 Troubleshooting
+
+### Camera Images Missing / Dead Links (`HTTP 404 - not-found-fileId`)
+If camera snapshots fail to load or Home Assistant logs `not-found-fileId` (and the official SmartThings mobile app also cannot load the pictures):
+* **Remote Fix (No physical access needed)**: In your network manager (e.g. UniFi Network, router admin), **force a Wi-Fi reconnect** for the refrigerator. Even if the fridge responds to local ICMP pings, forcing a Wi-Fi reconnect drops stale TCP/TLS cloud upload sockets on the fridge's Tizen OS and triggers a fresh connection to Samsung's media upload server, restoring camera images immediately.
+* **On-Site Fix**: Reboot the Family Hub display using the red rocker switch behind the top-right door hinge cover, or go to **Settings ➔ About Family Hub ➔ Restart**.
+
+---
+
 Credits
 -------
 
