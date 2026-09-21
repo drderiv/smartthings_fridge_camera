@@ -44,6 +44,7 @@ def generate_pat(
                 "--disable-gpu",
                 "--disable-blink-features=AutomationControlled",
             ],
+            ignore_default_args=["--enable-automation"],
         )
 
         context_kwargs = {
@@ -197,6 +198,14 @@ def generate_pat(
                             break
 
                 if is_2fa:
+                    if not sys.stdin.isatty():
+                        _LOGGER.error(
+                            "Samsung account requires 2FA or device approval, but rotator is running non-interactively in background mode. "
+                            "Please run '.venv/bin/python generate_pat.py' interactively in a terminal to authenticate once and refresh %s.",
+                            session_path,
+                        )
+                        raise RuntimeError("Interactive 2FA verification required in non-interactive/background mode.")
+
                     print()
                     print("=" * 60)
                     print("  SAMSUNG TWO-FACTOR AUTHENTICATION (2FA) REQUIRED")
@@ -240,11 +249,19 @@ def generate_pat(
                     else:
                         raise RuntimeError("Could not find 2FA code input field on page.")
 
-                # 4. Handle possible interstitial prompts (e.g. "Change your password regularly")
-                _LOGGER.info("Checking for interstitial prompts (e.g. password change reminders)...")
+                # 4. Handle possible interstitial prompts (e.g. Terms of Service, Privacy Updates, password reminders)
+                _LOGGER.info("Checking for interstitial prompts (e.g. Terms of Service, password change reminders)...")
                 time.sleep(4)
 
-                not_now_selectors = [
+                consent_selectors = [
+                    "button:has-text('Agree and continue')",
+                    "button:has-text('Agree to all and continue')",
+                    "button:has-text('I Agree')",
+                    "button:has-text('Agree')",
+                    "button:has-text('Accept')",
+                    "button:has-text('Continue')",
+                    "button#agreeBtn",
+                    "button#accept-btn",
                     "button[data-log-id='not-now']",
                     "button:has-text('Not now')",
                     "button[data-testid='Buttons5B67DE22']",
@@ -253,11 +270,27 @@ def generate_pat(
                     "button:has-text('Remind me later')",
                     "button:has-text('Cancel')",
                 ]
+                agree_all_checkboxes = [
+                    "input#agreeAll",
+                    "input[name='agreeAll']",
+                    "label:has-text('Agree to all')",
+                    "label:has-text('I agree to all')",
+                ]
 
-                for _ in range(3):
+                for _ in range(4):
                     clicked_interstitial = False
                     for target in [page] + page.frames:
-                        for sel in not_now_selectors:
+                        for cb_sel in agree_all_checkboxes:
+                            try:
+                                cb = target.locator(cb_sel).first
+                                if cb.is_visible():
+                                    _LOGGER.info("Detected consent checkbox '%s'; checking...", cb_sel)
+                                    cb.click()
+                                    time.sleep(1)
+                            except Exception:
+                                pass
+
+                        for sel in consent_selectors:
                             try:
                                 loc = target.locator(sel).first
                                 if loc.is_visible():
@@ -385,11 +418,28 @@ def generate_pat(
 
         except Exception as e:
             try:
+                current_url = page.url
+                page_title = page.title()
+                _LOGGER.error("PAT generation failed on page URL: %s | Page title: '%s'", current_url, page_title)
+
+                content_lower = page.content().lower()
+                if any(k in content_lower for k in ["recaptcha", "g-recaptcha", "challenge-running", "cf-turnstile", "captcha"]):
+                    _LOGGER.error("Samsung presented a CAPTCHA challenge that cannot be solved automatically in headless mode.")
+                if any(k in content_lower for k in ["verify", "two-step", "the code", "security code"]):
+                    _LOGGER.error("Samsung is requesting two-step verification / device approval.")
+
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                local_png = os.path.join(script_dir, "smartthings_pat_error.png")
+                local_html = os.path.join(script_dir, "smartthings_pat_error.html")
+                page.screenshot(path=local_png)
                 page.screenshot(path="/tmp/smartthings_pat_error.png")
+                with open(local_html, "w", encoding="utf-8") as f:
+                    f.write(page.content())
                 with open("/tmp/smartthings_pat_error.html", "w", encoding="utf-8") as f:
                     f.write(page.content())
-            except Exception:
-                pass
+                _LOGGER.info("Saved failure screenshot to %s and %s", local_png, "/tmp/smartthings_pat_error.png")
+            except Exception as screenshot_err:
+                _LOGGER.warning("Could not capture failure screenshot: %s", screenshot_err)
             raise e
         finally:
             browser.close()

@@ -101,20 +101,24 @@ def weekly_log_cleanup_loop(log_file: str = LOG_FILE, max_lines: int = 100) -> N
             _LOGGER.warning("Error during scheduled log cleanup: %s", e)
 
 
-def is_token_fresh(token_file: str, max_age_days: int) -> bool:
-    """Check if a token file exists, is non-empty, and newer than max_age_days."""
+def get_token_age(token_file: str) -> float | None:
+    """Return age of token file in seconds, or None if file doesn't exist or is empty."""
     if not os.path.exists(token_file):
-        return False
+        return None
     try:
         with open(token_file, "r", encoding="utf-8") as f:
             tok = f.read().strip()
         if not tok:
-            return False
-        mtime = os.path.getmtime(token_file)
-        age_seconds = time.time() - mtime
-        return age_seconds < (max_age_days * 86400)
+            return None
+        return time.time() - os.path.getmtime(token_file)
     except Exception:
-        return False
+        return None
+
+
+def is_token_fresh(token_file: str, max_age_seconds: float) -> bool:
+    """Check if a token file exists, is non-empty, and newer than max_age_seconds."""
+    age = get_token_age(token_file)
+    return age is not None and age < max_age_seconds
 
 
 class PATHandler(BaseHTTPRequestHandler):
@@ -139,44 +143,65 @@ class PATHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"token": token, "status": "ok"}).encode("utf-8"))
+                response = {"token": token, "status": "ok", "type": "smartthings_pat"}
+                self.wfile.write(json.dumps(response).encode("utf-8"))
                 _LOGGER.info("Served SmartThings PAT to client %s", self.client_address[0])
-                return
+            else:
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                response = {"error": "PAT not generated yet", "status": "unavailable"}
+                self.wfile.write(json.dumps(response).encode("utf-8"))
+                _LOGGER.warning("PAT requested by %s but token file is empty or missing.", self.client_address[0])
 
-            self.send_response(404)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "No SmartThings PAT currently available"}).encode("utf-8"))
-
-        # 2. Samsung Food Token endpoint
+        # 2. Samsung Food (Whisk) Token endpoint
         elif self.path in ("/food_token", "/food_token/"):
             token = self._read_file_token(FOOD_TOKEN_FILE)
             if token:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"token": token, "status": "ok"}).encode("utf-8"))
+                response = {"token": token, "status": "ok", "type": "samsung_food_token"}
+                self.wfile.write(json.dumps(response).encode("utf-8"))
                 _LOGGER.info("Served Samsung Food token to client %s", self.client_address[0])
-                return
-
-            self.send_response(404)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "No Samsung Food token currently available"}).encode("utf-8"))
+            else:
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                response = {"error": "Samsung Food token not generated yet", "status": "unavailable"}
+                self.wfile.write(json.dumps(response).encode("utf-8"))
+                _LOGGER.warning("Samsung Food token requested by %s but token file is empty or missing.", self.client_address[0])
 
         # 3. Combined Tokens endpoint
         elif self.path in ("/tokens", "/tokens/"):
             pat = self._read_file_token(TOKEN_FILE)
-            food_tok = self._read_file_token(FOOD_TOKEN_FILE)
+            food_token = self._read_file_token(FOOD_TOKEN_FILE)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({
+            response = {
+                "smartthings_pat": pat,
+                "samsung_food_token": food_token,
                 "pat": pat,
-                "food_token": food_tok,
-                "status": "ok" if (pat or food_tok) else "empty",
-            }).encode("utf-8"))
+                "food_token": food_token,
+                "status": "ok" if (pat or food_token) else "empty",
+            }
+            self.wfile.write(json.dumps(response).encode("utf-8"))
             _LOGGER.info("Served combined tokens to client %s", self.client_address[0])
+
+        # 4. Health endpoint
+        elif self.path in ("/health", "/health/"):
+            pat_ok = self._read_file_token(TOKEN_FILE) is not None
+            food_ok = self._read_file_token(FOOD_TOKEN_FILE) is not None
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            response = {
+                "status": "healthy",
+                "smartthings_pat_available": pat_ok,
+                "samsung_food_token_available": food_ok,
+            }
+            self.wfile.write(json.dumps(response).encode("utf-8"))
 
         else:
             self.send_response(404)
@@ -190,24 +215,21 @@ class PATHandler(BaseHTTPRequestHandler):
 
 def pat_rotation_loop(email: str, password: str, interval_hours: int = 23):
     """Background thread that runs generate_pat periodically."""
-    try:
-        _LOGGER.info("Executing initial startup PAT generation...")
-        new_token = generate_pat(
-            email=email,
-            password=password,
-            output_file=TOKEN_FILE,
-            session_file=SESSION_FILE,
-            headless=True,
+    max_seconds = interval_hours * 3600
+    age = get_token_age(TOKEN_FILE)
+    if age is not None and age < max_seconds:
+        remaining = max_seconds - age
+        _LOGGER.info(
+            "Existing PAT token in %s is still fresh (age: %.1f hours). Scheduling next rotation in %.1f hours.",
+            os.path.basename(TOKEN_FILE),
+            age / 3600.0,
+            remaining / 3600.0,
         )
-        _LOGGER.info("PAT successfully generated: %s...", new_token[:8])
-    except Exception as err:
-        _LOGGER.error("Failed to generate PAT on initial startup: %s", err)
+        time.sleep(remaining)
+    else:
+        _LOGGER.info("No fresh PAT token found. Executing startup generation...")
 
     while True:
-        sleep_seconds = interval_hours * 3600
-        _LOGGER.info("Sleeping for %d hours until next scheduled PAT rotation...", interval_hours)
-        time.sleep(sleep_seconds)
-
         try:
             _LOGGER.info("Executing scheduled %d-hour PAT generation...", interval_hours)
             new_token = generate_pat(
@@ -218,41 +240,31 @@ def pat_rotation_loop(email: str, password: str, interval_hours: int = 23):
                 headless=True,
             )
             _LOGGER.info("PAT successfully updated: %s...", new_token[:8])
+            _LOGGER.info("Sleeping for %d hours until next scheduled PAT rotation...", interval_hours)
+            time.sleep(max_seconds)
         except Exception as err:
             _LOGGER.error("Failed to generate PAT in background loop: %s", err)
             _LOGGER.info("Will retry in 10 minutes...")
             time.sleep(600)
-            continue
 
 
 def food_rotation_loop(email: str, password: str, interval_days: int = 28):
     """Background thread that runs generate_food_token periodically."""
-    # Check if existing token is already fresh
-    if is_token_fresh(FOOD_TOKEN_FILE, interval_days):
+    max_seconds = interval_days * 86400
+    age = get_token_age(FOOD_TOKEN_FILE)
+    if age is not None and age < max_seconds:
+        remaining = max_seconds - age
         _LOGGER.info(
-            "Existing Samsung Food token in %s is still fresh (< %d days old). Skipping initial generation.",
+            "Existing Samsung Food token in %s is still fresh (age: %.1f days). Scheduling next rotation in %.1f days.",
             os.path.basename(FOOD_TOKEN_FILE),
-            interval_days,
+            age / 86400.0,
+            remaining / 86400.0,
         )
+        time.sleep(remaining)
     else:
         _LOGGER.info("No fresh Samsung Food token found. Executing startup generation...")
-        try:
-            new_token = generate_food_token(
-                email=email,
-                password=password,
-                output_file=FOOD_TOKEN_FILE,
-                session_file=SESSION_FILE,
-                headless=True,
-            )
-            _LOGGER.info("Samsung Food token successfully generated: %s...", new_token[:8])
-        except Exception as err:
-            _LOGGER.error("Failed to generate Samsung Food token on initial startup: %s", err)
 
     while True:
-        sleep_seconds = interval_days * 86400
-        _LOGGER.info("Sleeping for %d days until next scheduled Samsung Food token rotation...", interval_days)
-        time.sleep(sleep_seconds)
-
         try:
             _LOGGER.info("Executing scheduled %d-day Samsung Food token generation...", interval_days)
             new_token = generate_food_token(
@@ -263,11 +275,12 @@ def food_rotation_loop(email: str, password: str, interval_days: int = 28):
                 headless=True,
             )
             _LOGGER.info("Samsung Food token successfully updated: %s...", new_token[:8])
+            _LOGGER.info("Sleeping for %d days until next scheduled Samsung Food token rotation...", interval_days)
+            time.sleep(max_seconds)
         except Exception as err:
             _LOGGER.error("Failed to generate Samsung Food token in background loop: %s", err)
             _LOGGER.info("Will retry in 1 hour...")
             time.sleep(3600)
-            continue
 
 
 def main():

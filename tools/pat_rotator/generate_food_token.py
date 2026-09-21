@@ -41,6 +41,7 @@ def generate_food_token(
                 "--disable-blink-features=AutomationControlled",
                 "--disable-popup-blocking",
             ],
+            ignore_default_args=["--enable-automation"],
         )
 
         context_kwargs = {
