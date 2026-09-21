@@ -170,7 +170,7 @@ def generate_pat(
                 is_2fa = False
                 active_frame = page
                 page_text_lower = page.content().lower()
-                if any(kw in page_text_lower for kw in ["verify", "verification", "two-step", "the code", "security code"]):
+                if any(kw in page_text_lower for kw in ["verify", "verification", "two-step", "the code", "security code", "galaxy", "notification", "device"]):
                     is_2fa = True
 
                 if not is_2fa:
@@ -181,6 +181,8 @@ def generate_pat(
                         "text=Two-step",
                         "text=security code",
                         "text=Enter code",
+                        "text=Galaxy",
+                        "text=notification",
                         "input[name*='code' i]",
                         "input[placeholder*='code' i]",
                         "input#code",
@@ -206,10 +208,142 @@ def generate_pat(
                         )
                         raise RuntimeError("Interactive 2FA verification required in non-interactive/background mode.")
 
+                    # Save diagnostic screenshot of 2FA screen
+                    try:
+                        page.screenshot(path="/tmp/samsung_2fa_prompt.png")
+                    except Exception:
+                        pass
+
+                    # Step 3a: Check if Samsung defaulted to Galaxy device / tablet notification
+                    # and attempt to re-route 2FA to mobile phone text message (SMS)
+                    sms_routed = False
+
+                    # 1. Direct "Verify with text message" buttons/links
+                    direct_sms_selectors = [
+                        "button:has-text('Verify with text message')",
+                        "a:has-text('Verify with text message')",
+                        "button:has-text('Send text message')",
+                        "a:has-text('Send text message')",
+                        "button:has-text('Use text message')",
+                        "a:has-text('Use text message')",
+                        "button:has-text('Text message')",
+                        "a:has-text('Text message')",
+                    ]
+                    for target in [active_frame, page] + page.frames:
+                        for sel in direct_sms_selectors:
+                            try:
+                                loc = target.locator(sel).first
+                                if loc.is_visible():
+                                    _LOGGER.info("Found direct SMS option '%s'; clicking to re-route 2FA to phone...", sel)
+                                    loc.click()
+                                    time.sleep(3)
+                                    sms_routed = True
+                                    active_frame = target
+                                    break
+                            except Exception:
+                                pass
+                        if sms_routed:
+                            break
+
+                    # 2. If no direct button, look for "Verify another way" / "Didn't get a notification?"
+                    if not sms_routed:
+                        another_way_selectors = [
+                            "button:has-text('Verify another way')",
+                            "a:has-text('Verify another way')",
+                            "button:has-text('Try another way')",
+                            "a:has-text('Try another way')",
+                            "button:has-text('Didn\'t get a notification?')",
+                            "a:has-text('Didn\'t get a notification?')",
+                            "button:has-text('Didn’t get a notification?')",
+                            "a:has-text('Didn’t get a notification?')",
+                            "button:has-text('Need help?')",
+                            "a:has-text('Need help?')",
+                        ]
+                        for target in [active_frame, page] + page.frames:
+                            for sel in another_way_selectors:
+                                try:
+                                    loc = target.locator(sel).first
+                                    if loc.is_visible():
+                                        _LOGGER.info("Found '%s'; clicking to open alternative verification methods...", sel)
+                                        loc.click()
+                                        time.sleep(2)
+
+                                        # Look for Text message / SMS option in the list
+                                        for opt_sel in [
+                                            "label:has-text('Text message')",
+                                            "div:has-text('Text message')",
+                                            "button:has-text('Text message')",
+                                            "a:has-text('Text message')",
+                                            "input[type='radio'][value*='sms' i]",
+                                            "input[type='radio'][value*='text' i]",
+                                            "button:has-text('Send text')",
+                                            "button:has-text('Send code')",
+                                        ]:
+                                            try:
+                                                opt = target.locator(opt_sel).first
+                                                if opt.is_visible():
+                                                    _LOGGER.info("Selected '%s'...", opt_sel)
+                                                    opt.click()
+                                                    time.sleep(1)
+                                                    break
+                                            except Exception:
+                                                pass
+
+                                        # Click Confirm / Next / Send if present
+                                        for next_sel in [
+                                            "button:has-text('Send')",
+                                            "button:has-text('Send code')",
+                                            "button:has-text('Next')",
+                                            "button:has-text('Continue')",
+                                            "button:has-text('Confirm')",
+                                        ]:
+                                            try:
+                                                btn = target.locator(next_sel).first
+                                                if btn.is_visible():
+                                                    _LOGGER.info("Clicked confirmation '%s'...", next_sel)
+                                                    btn.click()
+                                                    time.sleep(3)
+                                                    break
+                                            except Exception:
+                                                pass
+
+                                        sms_routed = True
+                                        active_frame = target
+                                        break
+                                except Exception:
+                                    pass
+                            if sms_routed:
+                                break
+
+                    # Auto-check "Trust this device" / "Don't ask again on this device" if present
+                    trust_selectors = [
+                        "input#trustDevice",
+                        "input[name*='trust' i]",
+                        "input[name*='remember' i]",
+                        "label:has-text('Trust this device')",
+                        "label:has-text('Don\'t ask again')",
+                        "label:has-text('Don’t ask again')",
+                    ]
+                    for target in [active_frame, page] + page.frames:
+                        for t_sel in trust_selectors:
+                            try:
+                                t_loc = target.locator(t_sel).first
+                                if t_loc.is_visible():
+                                    t_loc.click()
+                                    _LOGGER.info("Checked '%s' to remember browser session.", t_sel)
+                                    break
+                            except Exception:
+                                pass
+
                     print()
                     print("=" * 60)
                     print("  SAMSUNG TWO-FACTOR AUTHENTICATION (2FA) REQUIRED")
-                    print("  A verification code was sent to your phone / authenticator.")
+                    if sms_routed:
+                        print("  [SUCCESS] Re-routed 2FA from tablet to phone via SMS text message!")
+                        print("  Please check your mobile phone for the 6-digit verification code.")
+                    else:
+                        print("  A verification code was sent to your phone or authenticator app.")
+                        print("  (If this went to your tablet, check /tmp/samsung_2fa_prompt.png)")
                     print("=" * 60)
                     two_fa_code = input("Enter the 2FA verification code: ").strip()
 
@@ -223,18 +357,23 @@ def generate_pat(
                         "input[type='text']",
                     ]
                     code_field = None
-                    for target in [active_frame, page] + page.frames:
-                        for sel in code_selectors:
-                            try:
-                                loc = target.locator(sel).first
-                                if loc.is_visible():
-                                    code_field = loc
-                                    active_frame = target
-                                    break
-                            except Exception:
-                                pass
+                    # Wait up to 10 seconds for code field to appear
+                    for _ in range(10):
+                        for target in [active_frame, page] + page.frames:
+                            for sel in code_selectors:
+                                try:
+                                    loc = target.locator(sel).first
+                                    if loc.is_visible():
+                                        code_field = loc
+                                        active_frame = target
+                                        break
+                                except Exception:
+                                    pass
+                            if code_field:
+                                break
                         if code_field:
                             break
+                        time.sleep(1)
 
                     if code_field:
                         code_field.fill(two_fa_code)
