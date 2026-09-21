@@ -163,41 +163,78 @@ def generate_pat(
                     _LOGGER.info("Submitting login via Enter...")
                     page.keyboard.press("Enter")
 
-                # 3. Check for 2FA / Verification step
-                _LOGGER.info("Checking for post-login verification...")
-                time.sleep(8)
+                # 3. Check for onboarding / Privacy Notice / Consent screens (e.g. SmartThings "Control your devices ... Continue")
+                _LOGGER.info("Checking for onboarding / Privacy Notice / consent screens...")
+                time.sleep(5)
 
-                is_2fa = False
-                active_frame = page
-                page_text_lower = page.content().lower()
-                if any(kw in page_text_lower for kw in ["verify", "verification", "two-step", "the code", "security code", "galaxy", "notification", "device"]):
-                    is_2fa = True
-
-                if not is_2fa:
-                    verify_indicators = [
-                        "text=Verify",
-                        "text=verification",
-                        "text=the code",
-                        "text=Two-step",
-                        "text=security code",
-                        "text=Enter code",
-                        "text=Galaxy",
-                        "text=notification",
-                        "input[name*='code' i]",
-                        "input[placeholder*='code' i]",
-                        "input#code",
-                    ]
+                for _ in range(3):
+                    clicked_continue = False
                     for target in [page] + page.frames:
-                        for sel in verify_indicators:
+                        for sel in [
+                            "button:has-text('Continue')",
+                            "a:has-text('Continue')",
+                            "button:has-text('Agree and continue')",
+                            "button:has-text('Agree to all and continue')",
+                            "button:has-text('I Agree')",
+                            "button:has-text('Agree')",
+                            "button:has-text('Accept')",
+                        ]:
                             try:
-                                if target.locator(sel).first.is_visible():
-                                    is_2fa = True
-                                    active_frame = target
+                                loc = target.locator(sel).first
+                                if loc.is_visible():
+                                    _LOGGER.info("Detected consent / onboarding button '%s'; clicking to proceed...", sel)
+                                    loc.click()
+                                    clicked_continue = True
+                                    time.sleep(4)
                                     break
                             except Exception:
                                 pass
-                        if is_2fa:
+                        if clicked_continue:
                             break
+                    if not clicked_continue:
+                        break
+
+                # 4. Check if tokens page is already visible after clicking Continue
+                gen_button = page.locator("button:has-text('Generate new token'), a:has-text('Generate new token')").first
+                is_2fa = False
+                active_frame = page
+                if gen_button.is_visible():
+                    _LOGGER.info("Tokens page loaded directly! No 2FA verification required.")
+                else:
+                    # Check for genuine 2FA / Verification step
+                    _LOGGER.info("Checking for post-login verification...")
+                    page_text_lower = page.content().lower()
+                    if any(kw in page_text_lower for kw in [
+                        "two-step", "two-factor", "2-step", "verification code", "security code",
+                        "galaxy device notification", "check your galaxy", "check your phone to verify",
+                    ]):
+                        is_2fa = True
+
+                    if not is_2fa:
+                        verify_indicators = [
+                            "text=Two-step",
+                            "text=two-step",
+                            "text=two-factor",
+                            "text=security code",
+                            "text=Enter code",
+                            "text=Enter the code",
+                            "text=Check your Galaxy",
+                            "text=Galaxy device notification",
+                            "input[name*='code' i]",
+                            "input[placeholder*='code' i]",
+                            "input#code",
+                        ]
+                        for target in [page] + page.frames:
+                            for sel in verify_indicators:
+                                try:
+                                    if target.locator(sel).first.is_visible():
+                                        is_2fa = True
+                                        active_frame = target
+                                        break
+                                except Exception:
+                                    pass
+                            if is_2fa:
+                                break
 
                 if is_2fa:
                     if not sys.stdin.isatty():
