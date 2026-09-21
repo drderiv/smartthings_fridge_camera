@@ -23,6 +23,11 @@ UUID_REGEX = re.compile(
 )
 
 
+class InteractiveAuthRequired(RuntimeError):
+    """Raised when human intervention (2FA, CAPTCHA, etc.) is required to authenticate."""
+    pass
+
+
 def generate_pat(
     email: str = "",
     password: str = "",
@@ -244,7 +249,7 @@ def generate_pat(
                             "Please run '.venv/bin/python generate_pat.py' interactively in a terminal to authenticate once and refresh %s.",
                             session_path,
                         )
-                        raise RuntimeError("Interactive 2FA verification required in non-interactive/background mode.")
+                        raise InteractiveAuthRequired("Interactive 2FA verification required in non-interactive/background mode.")
 
                     # Save diagnostic screenshot of 2FA screen
                     try:
@@ -646,8 +651,12 @@ def generate_pat(
                 content_lower = page.content().lower()
                 if any(k in content_lower for k in ["recaptcha", "g-recaptcha", "challenge-running", "cf-turnstile", "captcha"]):
                     _LOGGER.error("Samsung presented a CAPTCHA challenge that cannot be solved automatically in headless mode.")
-                if any(k in content_lower for k in ["verify", "two-step", "the code", "security code"]):
+                    if headless:
+                        e = InteractiveAuthRequired("Samsung CAPTCHA challenge requires manual/interactive resolution.")
+                elif any(k in content_lower for k in ["verify", "two-step", "the code", "security code"]):
                     _LOGGER.error("Samsung is requesting two-step verification / device approval.")
+                    if headless and not sys.stdin.isatty():
+                        e = InteractiveAuthRequired("Interactive 2FA verification required in non-interactive/background mode.")
 
                 script_dir = os.path.dirname(os.path.abspath(__file__))
                 local_png = os.path.join(script_dir, "smartthings_pat_error.png")

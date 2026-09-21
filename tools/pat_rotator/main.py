@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Import local generators
-from generate_pat import generate_pat
+from generate_pat import generate_pat, InteractiveAuthRequired
 from generate_food_token import generate_food_token
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -256,6 +256,23 @@ def pat_rotation_loop(email: str, password: str, interval_hours: int = 23, two_f
             _LOGGER.info("PAT successfully updated: %s...", new_token[:8])
             _LOGGER.info("Sleeping for %d hours until next scheduled PAT rotation...", interval_hours)
             time.sleep(max_seconds)
+        except InteractiveAuthRequired as err:
+            _LOGGER.error("Interactive authentication required: %s", err)
+            _LOGGER.error(
+                "Halting automated browser login attempts to protect your Samsung account. "
+                "Please run '.venv/bin/python generate_pat.py' in a terminal. "
+                "The background rotator is monitoring and will automatically resume once a fresh token is generated."
+            )
+            while True:
+                time.sleep(30)
+                age = get_token_age(TOKEN_FILE)
+                if age is not None and age < (max_seconds - 300):
+                    _LOGGER.info(
+                        "Fresh PAT token detected in %s (age: %.1f min). Resuming scheduled rotation!",
+                        os.path.basename(TOKEN_FILE),
+                        age / 60.0,
+                    )
+                    break
         except Exception as err:
             _LOGGER.error("Failed to generate PAT in background loop: %s", err)
             _LOGGER.info("Will retry in 10 minutes...")
