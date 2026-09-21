@@ -230,6 +230,19 @@ def pat_rotation_loop(email: str, password: str, interval_hours: int = 23, two_f
         _LOGGER.info("No fresh PAT token found. Executing startup generation...")
 
     while True:
+        # Check if an external run (e.g. manual generate_pat.py) already refreshed the token
+        age = get_token_age(TOKEN_FILE)
+        if age is not None and age < (max_seconds - 300):
+            remaining = max_seconds - age
+            _LOGGER.info(
+                "Fresh PAT token detected in %s (age: %.1f hours). Scheduling next rotation in %.1f hours.",
+                os.path.basename(TOKEN_FILE),
+                age / 3600.0,
+                remaining / 3600.0,
+            )
+            time.sleep(remaining)
+            continue
+
         try:
             _LOGGER.info("Executing scheduled %d-hour PAT generation...", interval_hours)
             new_token = generate_pat(
@@ -266,6 +279,19 @@ def food_rotation_loop(email: str, password: str, interval_days: int = 28):
         _LOGGER.info("No fresh Samsung Food token found. Executing startup generation...")
 
     while True:
+        # Check if an external run (e.g. manual generate_food_token.py) already refreshed the token
+        age = get_token_age(FOOD_TOKEN_FILE)
+        if age is not None and age < (max_seconds - 3600):
+            remaining = max_seconds - age
+            _LOGGER.info(
+                "Fresh Samsung Food token detected in %s (age: %.1f days). Scheduling next rotation in %.1f days.",
+                os.path.basename(FOOD_TOKEN_FILE),
+                age / 86400.0,
+                remaining / 86400.0,
+            )
+            time.sleep(remaining)
+            continue
+
         try:
             _LOGGER.info("Executing scheduled %d-day Samsung Food token generation...", interval_days)
             new_token = generate_food_token(
