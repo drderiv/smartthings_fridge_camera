@@ -213,7 +213,7 @@ class PATHandler(BaseHTTPRequestHandler):
         pass
 
 
-def pat_rotation_loop(email: str, password: str, interval_hours: int = 23):
+def pat_rotation_loop(email: str, password: str, interval_hours: int = 23, two_factor_method: str = "device"):
     """Background thread that runs generate_pat periodically."""
     max_seconds = interval_hours * 3600
     age = get_token_age(TOKEN_FILE)
@@ -237,6 +237,7 @@ def pat_rotation_loop(email: str, password: str, interval_hours: int = 23):
                 password=password,
                 output_file=TOKEN_FILE,
                 session_file=SESSION_FILE,
+                two_factor_method=two_factor_method,
                 headless=True,
             )
             _LOGGER.info("PAT successfully updated: %s...", new_token[:8])
@@ -298,6 +299,8 @@ def main():
     pat_interval_hours = int(config.get("rotation_interval_hours", 23))
     food_interval_days = int(config.get("food_rotation_interval_days", 28))
 
+    two_factor_method = config.get("two_factor_method", "device")
+
     if not email or not password or email == "YOUR_SAMSUNG_EMAIL":
         _LOGGER.error("Please configure 'samsung_email' and 'samsung_password' in config.json")
         sys.exit(1)
@@ -313,7 +316,7 @@ def main():
     # Start PAT rotation thread in background (every 23 hours)
     pat_thread = threading.Thread(
         target=pat_rotation_loop,
-        args=(email, password, pat_interval_hours),
+        args=(email, password, pat_interval_hours, two_factor_method),
         daemon=True,
     )
     pat_thread.start()
@@ -333,6 +336,7 @@ def main():
     _LOGGER.info(" - SmartThings PAT:      http://<SERVER_IP>:%d/pat (every %dh)", port, pat_interval_hours)
     _LOGGER.info(" - Samsung Food Token:   http://<SERVER_IP>:%d/food_token (every %dd)", port, food_interval_days)
     _LOGGER.info(" - Combined Status:      http://<SERVER_IP>:%d/tokens", port)
+    _LOGGER.info(" - 2FA Method:           %s", two_factor_method)
     _LOGGER.info(" - Log file:             %s (auto-pruned weekly)", LOG_FILE)
     _LOGGER.info("==========================================================")
 

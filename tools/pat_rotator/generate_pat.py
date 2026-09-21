@@ -29,6 +29,7 @@ def generate_pat(
     output_file: str = "smartthings_pat.txt",
     session_file: str = "smartthings_session.json",
     token_name: str = "ha-fridge-camera",
+    two_factor_method: str = "device",
     headless: bool = True,
 ) -> str:
     output_path = os.path.expanduser(output_file)
@@ -251,99 +252,31 @@ def generate_pat(
                     except Exception:
                         pass
 
-                    # Step 3a: Check if Samsung defaulted to Galaxy device / tablet notification
-                    # and attempt to re-route 2FA to mobile phone text message (SMS)
+                    # Step 3a: Handle 2FA according to configured two_factor_method ("device" vs "sms")
                     sms_routed = False
+                    device_approved = False
 
-                    # 1. Direct "Verify with text message" buttons/links
-                    direct_sms_selectors = [
-                        "button:has-text('Verify with text message')",
-                        "a:has-text('Verify with text message')",
-                        "button:has-text('Send text message')",
-                        "a:has-text('Send text message')",
-                        "button:has-text('Use text message')",
-                        "a:has-text('Use text message')",
-                        "button:has-text('Text message')",
-                        "a:has-text('Text message')",
-                    ]
-                    for target in [active_frame, page] + page.frames:
-                        for sel in direct_sms_selectors:
-                            try:
-                                loc = target.locator(sel).first
-                                if loc.is_visible():
-                                    _LOGGER.info("Found direct SMS option '%s'; clicking to re-route 2FA to phone...", sel)
-                                    loc.click()
-                                    time.sleep(3)
-                                    sms_routed = True
-                                    active_frame = target
-                                    break
-                            except Exception:
-                                pass
-                        if sms_routed:
-                            break
-
-                    # 2. If no direct button, look for "Verify another way" / "Didn't get a notification?"
-                    if not sms_routed:
-                        another_way_selectors = [
-                            "button:has-text('Verify another way')",
-                            "a:has-text('Verify another way')",
-                            "button:has-text('Try another way')",
-                            "a:has-text('Try another way')",
-                            "button:has-text('Didn\'t get a notification?')",
-                            "a:has-text('Didn\'t get a notification?')",
-                            "button:has-text('Didn’t get a notification?')",
-                            "a:has-text('Didn’t get a notification?')",
-                            "button:has-text('Need help?')",
-                            "a:has-text('Need help?')",
+                    if two_factor_method.lower() in ("sms", "text"):
+                        _LOGGER.info("2FA method is 'sms'. Attempting to re-route 2FA to mobile phone text message...")
+                        # 1. Direct "Verify with text message" buttons/links
+                        direct_sms_selectors = [
+                            "button:has-text('Verify with text message')",
+                            "a:has-text('Verify with text message')",
+                            "button:has-text('Send text message')",
+                            "a:has-text('Send text message')",
+                            "button:has-text('Use text message')",
+                            "a:has-text('Use text message')",
+                            "button:has-text('Text message')",
+                            "a:has-text('Text message')",
                         ]
                         for target in [active_frame, page] + page.frames:
-                            for sel in another_way_selectors:
+                            for sel in direct_sms_selectors:
                                 try:
                                     loc = target.locator(sel).first
                                     if loc.is_visible():
-                                        _LOGGER.info("Found '%s'; clicking to open alternative verification methods...", sel)
+                                        _LOGGER.info("Found direct SMS option '%s'; clicking to re-route 2FA to phone...", sel)
                                         loc.click()
-                                        time.sleep(2)
-
-                                        # Look for Text message / SMS option in the list
-                                        for opt_sel in [
-                                            "label:has-text('Text message')",
-                                            "div:has-text('Text message')",
-                                            "button:has-text('Text message')",
-                                            "a:has-text('Text message')",
-                                            "input[type='radio'][value*='sms' i]",
-                                            "input[type='radio'][value*='text' i]",
-                                            "button:has-text('Send text')",
-                                            "button:has-text('Send code')",
-                                        ]:
-                                            try:
-                                                opt = target.locator(opt_sel).first
-                                                if opt.is_visible():
-                                                    _LOGGER.info("Selected '%s'...", opt_sel)
-                                                    opt.click()
-                                                    time.sleep(1)
-                                                    break
-                                            except Exception:
-                                                pass
-
-                                        # Click Confirm / Next / Send if present
-                                        for next_sel in [
-                                            "button:has-text('Send')",
-                                            "button:has-text('Send code')",
-                                            "button:has-text('Next')",
-                                            "button:has-text('Continue')",
-                                            "button:has-text('Confirm')",
-                                        ]:
-                                            try:
-                                                btn = target.locator(next_sel).first
-                                                if btn.is_visible():
-                                                    _LOGGER.info("Clicked confirmation '%s'...", next_sel)
-                                                    btn.click()
-                                                    time.sleep(3)
-                                                    break
-                                            except Exception:
-                                                pass
-
+                                        time.sleep(3)
                                         sms_routed = True
                                         active_frame = target
                                         break
@@ -351,6 +284,78 @@ def generate_pat(
                                     pass
                             if sms_routed:
                                 break
+
+                        # 2. If no direct button, look for "Verify another way" / "Didn't get a notification?"
+                        if not sms_routed:
+                            another_way_selectors = [
+                                "button:has-text('Verify another way')",
+                                "a:has-text('Verify another way')",
+                                "button:has-text('Try another way')",
+                                "a:has-text('Try another way')",
+                                "button:has-text('Didn\'t get a notification?')",
+                                "a:has-text('Didn\'t get a notification?')",
+                                "button:has-text('Didn’t get a notification?')",
+                                "a:has-text('Didn’t get a notification?')",
+                                "button:has-text('Need help?')",
+                                "a:has-text('Need help?')",
+                            ]
+                            for target in [active_frame, page] + page.frames:
+                                for sel in another_way_selectors:
+                                    try:
+                                        loc = target.locator(sel).first
+                                        if loc.is_visible():
+                                            _LOGGER.info("Found '%s'; clicking to open alternative verification methods...", sel)
+                                            loc.click()
+                                            time.sleep(2)
+
+                                            # Look for Text message / SMS option in the list
+                                            for opt_sel in [
+                                                "label:has-text('Text message')",
+                                                "div:has-text('Text message')",
+                                                "button:has-text('Text message')",
+                                                "a:has-text('Text message')",
+                                                "input[type='radio'][value*='sms' i]",
+                                                "input[type='radio'][value*='text' i]",
+                                                "button:has-text('Send text')",
+                                                "button:has-text('Send code')",
+                                            ]:
+                                                try:
+                                                    opt = target.locator(opt_sel).first
+                                                    if opt.is_visible():
+                                                        _LOGGER.info("Selected '%s'...", opt_sel)
+                                                        opt.click()
+                                                        time.sleep(1)
+                                                        break
+                                                except Exception:
+                                                    pass
+
+                                            # Click Confirm / Next / Send if present
+                                            for next_sel in [
+                                                "button:has-text('Send')",
+                                                "button:has-text('Send code')",
+                                                "button:has-text('Next')",
+                                                "button:has-text('Continue')",
+                                                "button:has-text('Confirm')",
+                                            ]:
+                                                try:
+                                                    btn = target.locator(next_sel).first
+                                                    if btn.is_visible():
+                                                        _LOGGER.info("Clicked confirmation '%s'...", next_sel)
+                                                        btn.click()
+                                                        time.sleep(3)
+                                                        break
+                                                except Exception:
+                                                    pass
+
+                                            sms_routed = True
+                                            active_frame = target
+                                            break
+                                    except Exception:
+                                        pass
+                                if sms_routed:
+                                    break
+                    else:
+                        _LOGGER.info("2FA method is '%s'. Retaining Galaxy device / tablet push notification.", two_factor_method)
 
                     # Auto-check "Trust this device" / "Don't ask again on this device" if present
                     trust_selectors = [
@@ -372,17 +377,56 @@ def generate_pat(
                             except Exception:
                                 pass
 
-                    print()
-                    print("=" * 60)
-                    print("  SAMSUNG TWO-FACTOR AUTHENTICATION (2FA) REQUIRED")
                     if sms_routed:
-                        print("  [SUCCESS] Re-routed 2FA from tablet to phone via SMS text message!")
+                        print()
+                        print("=" * 60)
+                        print("  SAMSUNG TWO-FACTOR AUTHENTICATION (2FA) VIA SMS")
+                        print("  [SUCCESS] Re-routed 2FA to your mobile phone via SMS text message!")
                         print("  Please check your mobile phone for the 6-digit verification code.")
+                        print("=" * 60)
+                        two_fa_code = input("Enter the 2FA verification code: ").strip()
+                    elif two_factor_method.lower() in ("device", "push"):
+                        print()
+                        print("=" * 60)
+                        print("  SAMSUNG TWO-FACTOR AUTHENTICATION (2FA) VIA GALAXY DEVICE")
+                        print("  Push notification sent to your Galaxy device / tablet.")
+                        print("  Please tap 'Yes' (or approve sign-in) on your device.")
+                        print("=" * 60)
+                        _LOGGER.info("Waiting for Galaxy device approval...")
+
+                        for _ in range(30):
+                            time.sleep(2)
+                            gen_loc = page.locator("button:has-text('Generate new token'), a:has-text('Generate new token')").first
+                            try:
+                                if gen_loc.is_visible() or ("account.smartthings.com" in page.url and "/tokens" in page.url):
+                                    device_approved = True
+                                    _LOGGER.info("Device approval detected successfully via browser redirection!")
+                                    break
+                            except Exception:
+                                pass
+                            for c_sel in ["button:has-text('Continue')", "button:has-text('Agree')"]:
+                                try:
+                                    c_loc = page.locator(c_sel).first
+                                    if c_loc.is_visible():
+                                        c_loc.click()
+                                        time.sleep(2)
+                                except Exception:
+                                    pass
+                            if device_approved:
+                                break
+
+                        if not device_approved:
+                            two_fa_code = input("Enter 2FA verification code (or press Enter if approved on device): ").strip()
+                        else:
+                            two_fa_code = ""
                     else:
+                        print()
+                        print("=" * 60)
+                        print("  SAMSUNG TWO-FACTOR AUTHENTICATION (2FA) REQUIRED")
                         print("  A verification code was sent to your phone or authenticator app.")
                         print("  (If this went to your tablet, check /tmp/samsung_2fa_prompt.png)")
-                    print("=" * 60)
-                    two_fa_code = input("Enter the 2FA verification code: ").strip()
+                        print("=" * 60)
+                        two_fa_code = input("Enter the 2FA verification code: ").strip()
 
                     code_selectors = [
                         "input[name*='code' i]",
@@ -394,36 +438,37 @@ def generate_pat(
                         "input[type='text']",
                     ]
                     code_field = None
-                    # Wait up to 10 seconds for code field to appear
-                    for _ in range(10):
-                        for target in [active_frame, page] + page.frames:
-                            for sel in code_selectors:
-                                try:
-                                    loc = target.locator(sel).first
-                                    if loc.is_visible():
-                                        code_field = loc
-                                        active_frame = target
-                                        break
-                                except Exception:
-                                    pass
+                    if two_fa_code:
+                        # Wait up to 10 seconds for code field to appear
+                        for _ in range(10):
+                            for target in [active_frame, page] + page.frames:
+                                for sel in code_selectors:
+                                    try:
+                                        loc = target.locator(sel).first
+                                        if loc.is_visible():
+                                            code_field = loc
+                                            active_frame = target
+                                            break
+                                    except Exception:
+                                        pass
+                                if code_field:
+                                    break
                             if code_field:
                                 break
-                        if code_field:
-                            break
-                        time.sleep(1)
+                            time.sleep(1)
 
-                    if code_field:
-                        code_field.fill(two_fa_code)
-                        time.sleep(1)
-                        verify_btn = active_frame.locator(
-                            "button:has-text('Verify'), button:has-text('Submit'), button:has-text('Next'), button[type='submit']"
-                        ).first
-                        if verify_btn.is_visible():
-                            verify_btn.click()
-                        else:
-                            active_frame.keyboard.press("Enter")
-                    else:
-                        raise RuntimeError("Could not find 2FA code input field on page.")
+                        if code_field:
+                            code_field.fill(two_fa_code)
+                            time.sleep(1)
+                            verify_btn = active_frame.locator(
+                                "button:has-text('Verify'), button:has-text('Submit'), button:has-text('Next'), button[type='submit']"
+                            ).first
+                            if verify_btn.is_visible():
+                                verify_btn.click()
+                            else:
+                                active_frame.keyboard.press("Enter")
+                        elif not device_approved:
+                            raise RuntimeError("Could not find 2FA code input field on page.")
 
                 # 4. Handle possible interstitial prompts (e.g. Terms of Service, Privacy Updates, password reminders)
                 _LOGGER.info("Checking for interstitial prompts (e.g. Terms of Service, password change reminders)...")
@@ -645,10 +690,18 @@ def main():
         action="store_true",
         help="Run browser with visible UI for debugging",
     )
+    parser.add_argument(
+        "--2fa-method",
+        dest="two_factor_method",
+        choices=["device", "sms"],
+        default=None,
+        help="2FA delivery method: 'device' for Galaxy tablet/phone push, 'sms' for mobile text message",
+    )
     args = parser.parse_args()
 
     email = args.email
     password = args.password
+    two_factor_method = args.two_factor_method
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -664,8 +717,12 @@ def main():
                 cfg = json.load(f)
             email = email or cfg.get("samsung_email")
             password = password or cfg.get("samsung_password")
+            if not two_factor_method:
+                two_factor_method = cfg.get("two_factor_method")
         except Exception as err:
             _LOGGER.warning("Could not read config file %s: %s", config_path, err)
+
+    two_factor_method = two_factor_method or "device"
 
     output_file = args.output
     if not os.path.isabs(os.path.expanduser(output_file)) and not os.path.exists(output_file):
@@ -681,6 +738,7 @@ def main():
             password=password or "",
             output_file=output_file,
             session_file=session_file,
+            two_factor_method=two_factor_method,
             headless=not args.no_headless,
         )
         print()

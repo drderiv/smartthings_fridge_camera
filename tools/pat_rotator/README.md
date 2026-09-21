@@ -29,17 +29,27 @@ cd tools/pat_rotator
 ./setup.sh
 ```
 
-### 2. Configure Credentials
+### 2. Configure Credentials & 2FA Preferences
 Edit `config.json`:
 ```json
 {
   "samsung_email": "your_samsung_account@example.com",
   "samsung_password": "your_samsung_password",
+  "two_factor_method": "device",
   "port": 8765,
   "rotation_interval_hours": 23,
   "food_rotation_interval_days": 28
 }
 ```
+
+#### Configuration Options:
+* `samsung_email` & `samsung_password`: Your Samsung account credentials.
+* `two_factor_method`: Delivery method for Samsung Two-Factor Authentication (2FA) during initial session creation or when session cookies hard-expire:
+  * `"device"` *(default)*: Sends a push notification to your Galaxy phone or tablet. Simply tap **"Yes"** on your device to approve!
+  * `"sms"`: Automatically re-routes the 2FA prompt to your mobile phone via SMS text message and prompts for the 6-digit code in the terminal (recommended if you are travelling or do not use a Galaxy phone).
+* `port`: HTTP server port (default: `8765`).
+* `rotation_interval_hours`: Frequency to generate a fresh PAT (default: `23` hours).
+* `food_rotation_interval_days`: Frequency to refresh Samsung Food token (default: `28` days).
 
 ### 3. Run
 ```bash

@@ -1,6 +1,7 @@
 {
   "samsung_email": "YOUR_SAMSUNG_EMAIL",
   "samsung_password": "YOUR_SAMSUNG_PASSWORD",
+  "two_factor_method": "device",
   "port": 8765,
   "rotation_interval_hours": 23,
   "food_rotation_interval_days": 28
