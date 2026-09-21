@@ -62,6 +62,50 @@ nohup .venv/bin/python main.py &
 
 ---
 
+## Troubleshooting & Session Maintenance (2FA & Cookie Expiry)
+
+### How Sessions Work
+The rotator caches your authenticated browser session to `smartthings_session.json` and updates it on every rotation. Under normal operation, sliding expiration keeps this session active indefinitely without any intervention.
+
+### If Samsung Demands Interactive 2FA or CAPTCHA
+If Samsung Account session cookies hard-expire (e.g. after ~30 days or when Samsung updates terms of service), Samsung's identity provider may demand human verification (a push confirmation, an SMS code, or a visual CAPTCHA).
+
+When running headlessly in the background, automated Chromium cannot guess a 2FA code or solve a picture CAPTCHA. It will log a notice and retry every 10 minutes:
+```text
+[ERROR] Samsung account requires 2FA or device approval, but rotator is running non-interactively in background mode.
+Please run '.venv/bin/python generate_pat.py' interactively in a terminal to authenticate once and refresh smartthings_session.json.
+```
+
+### How to Refresh the Session
+1. Open a terminal or screen session in your rotator directory:
+   ```bash
+   cd tools/pat_rotator   # (or ~/smartthings_pat_rotator)
+   .venv/bin/python generate_pat.py
+   ```
+2. **If using `"two_factor_method": "device"`**:
+   Samsung will push a notification to your Galaxy phone or tablet. Simply tap **"Yes"** on your device. The script detects approval within seconds and finishes automatically.
+3. **If using `"two_factor_method": "sms"`**:
+   The script will request an SMS text message to your registered mobile phone and prompt you in the terminal:
+   ```text
+   Enter the 2FA verification code:
+   ```
+   Type the 6-digit code and hit **Enter**.
+4. **If Samsung presents a visual CAPTCHA puzzle**:
+   Run the command with a visible browser UI on a computer with a desktop display:
+   ```bash
+   .venv/bin/python generate_pat.py --no-headless
+   ```
+   *(Alternatively, run it on your local workstation with `--no-headless`, solve the CAPTCHA once, and copy the updated `smartthings_session.json` to your server).*
+5. Once `generate_pat.py` prints `SUCCESS! New PAT: ...`, your session in `smartthings_session.json` is refreshed for another month, and the background service will resume autonomous rotation.
+
+### Diagnostic Screenshots
+Whenever a generation failure occurs, the rotator automatically captures:
+- A screenshot of the blocking page: `smartthings_pat_error.png` (and `/tmp/smartthings_pat_error.png`)
+- The full page HTML: `smartthings_pat_error.html` (and `/tmp/smartthings_pat_error.html`)
+You can inspect these files to immediately see the exact screen that was displayed.
+
+---
+
 ## Home Assistant Configuration
 
 ### 1. Create Helper Entities
