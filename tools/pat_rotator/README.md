@@ -1,22 +1,27 @@
-# Samsung FamilyHub Dual Token Rotator & Micro-Service
+# Samsung FamilyHub Tri-Token Rotator & Micro-Service
 
-A lightweight, standalone background service that automatically manages and rotates both:
+A lightweight, standalone background service that automatically manages and serves:
 1. **SmartThings Personal Access Tokens (PATs)**: Rotated every 23 hours via headless browser automation to handle Samsung's 24-hour token expiry limit.
 2. **Samsung Food (Whisk) Tokens**: Rotated every 28 days via headless browser automation using your saved Samsung account session to keep AI food inventory synced.
+3. **KICS Live Food Circles Tokens**: Provisioned and served to extract live circular camera crops cut from inside the fridge.
 
-Both tokens are served to Home Assistant over local REST endpoints.
+All tokens and refrigerator location data are served to Home Assistant over local REST endpoints.
 
 ---
 
 ## Features
 * **Zero External Dependencies**: Completely self-contained in this directory.
-* **Dual Rotation Loops**: 
+* **Autonomous Rotation Loops**: 
   - SmartThings PAT rotated every 23 hours.
   - Samsung Food token rotated every 28 days (and verified on startup).
+  - KICS Food Circles token validation and provisioning.
 * **Local REST Endpoints**:
   - `GET http://<SERVER_IP>:8765/pat` ➔ `{"token": "<PAT>", "status": "ok"}`
   - `GET http://<SERVER_IP>:8765/food_token` ➔ `{"token": "<FOOD_TOKEN>", "status": "ok"}`
-  - `GET http://<SERVER_IP>:8765/tokens` ➔ Combined JSON with both tokens.
+  - `GET http://<SERVER_IP>:8765/kics_token` ➔ `{"token": "<KICS_TOKEN>", "status": "ok"}`
+  - `GET http://<SERVER_IP>:8765/location_id` ➔ `{"location_id": "<LOCATION_ID>", "status": "ok"}`
+  - `GET http://<SERVER_IP>:8765/tokens` ➔ Combined JSON with all tokens and location details.
+  - `GET http://<SERVER_IP>:8765/health` ➔ Service health and token availability status.
 * **Automated Log Maintenance**: Writes directly to `rotator.log` and automatically trims it every Sunday at midnight to keep only the most recent 100 lines.
 
 ---
@@ -189,9 +194,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=robert
-WorkingDirectory=/home/robert/smartthings_pat_rotator
-ExecStart=/home/robert/smartthings_pat_rotator/.venv/bin/python main.py
+User=<YOUR_USER>
+WorkingDirectory=/home/<YOUR_USER>/smartthings_pat_rotator
+ExecStart=/home/<YOUR_USER>/smartthings_pat_rotator/.venv/bin/python main.py
 Restart=always
 RestartSec=10
 

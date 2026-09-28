@@ -9,5 +9,9 @@ smartthings_pat.txt
 smartthings_session.json
 samsung_food_token.txt
 *samsung_food_token.txt
+kics_food_token.txt
+*kics_food_token.txt
+active_bearer_token.txt
+*active_bearer_token.txt
 config.json
 *.log

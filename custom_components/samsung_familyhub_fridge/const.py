@@ -34,3 +34,13 @@ WHISK_FOODLIST_API = "https://api.whisk.com/foodlist/v2"
 FOOD_TOKEN_ENTITY = "input_text.samsung_food_token"
 FOOD_TOKEN_FILE = "samsung_food_token.txt"
 DEFAULT_FOOD_UPDATE_INTERVAL = 600  # 10 minutes
+
+# Samsung Family Hub Live Food Circles (KICS EPA) constants
+KICS_CLIENT_ID = "qumapq783u"
+KICS_FOODLIST_ENDPOINT = "https://kics-epa.samsungepa.com/api/foodlist"
+KICS_SA_AUTH_URL = "us-auth2.samsungosp.com"
+CONF_KICS_TOKEN = "kics_food_token"
+KICS_TOKEN_ENTITY = "input_text.kics_food_token"
+CONF_LOCATION_ID = "location_id"
+KICS_LOCATION_ENTITY = "input_text.kics_location_id"
+

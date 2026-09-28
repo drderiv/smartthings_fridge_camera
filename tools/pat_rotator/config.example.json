@@ -4,5 +4,6 @@
   "two_factor_method": "device",
   "port": 8765,
   "rotation_interval_hours": 23,
-  "food_rotation_interval_days": 28
+  "food_rotation_interval_days": 28,
+  "location_id": "YOUR_SMARTTHINGS_LOCATION_ID_OPTIONAL"
 }

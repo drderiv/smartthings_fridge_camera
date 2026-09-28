@@ -1,115 +1,158 @@
 # 🚀 Feature Enhancements & Incremental Capabilities
 
-This document details the major functional enhancements, architectural upgrades, and incremental capabilities introduced in this fork relative to the parent [`TryTryAgain/smartthings_fridge_camera`](https://github.com/TryTryAgain/smartthings_fridge_camera) repository (which itself built upon the original foundation by [ibielopolskyi](https://github.com/ibielopolskyi/smartthings_fridge_camera)).
+This document details the major functional enhancements, architectural upgrades, and capabilities introduced in this fork relative to the upstream parent [`TryTryAgain/smartthings_fridge_camera`](https://github.com/TryTryAgain/smartthings_fridge_camera) repository (which built upon the original foundation by [ibielopolskyi](https://github.com/ibielopolskyi/smartthings_fridge_camera)).
 
 ---
 
 ## 📋 Executive Summary of Changes
 
-| Area | Fork Parent ([TryTryAgain](https://github.com/TryTryAgain/smartthings_fridge_camera)) | This Enhanced Version |
+| Area | Upstream Parent ([TryTryAgain](https://github.com/TryTryAgain/smartthings_fridge_camera)) | This Enhanced Version |
 | :--- | :--- | :--- |
-| **Food Inventory Tracking** | ❌ Not supported | ✅ **AI Food Manager (`sensor.fridge_food_inventory`)** with names, stock photo thumbnails, locations, and expiration dates |
-| **Inventory Sync Trigger** | ❌ None | ✅ **Automatic door-close triggered sync** with cloud commit delay + 10-minute periodic polling |
-| **Token Lifetime & Rotation** | ⚠️ Expired after 24h (PAT) / ~60d (Food) | ✅ **Automated Dual-Token Rotator microservice** (PAT every 23h + Samsung Food every 28d) with local REST server and zero-downtime updates |
-| **Dynamic Token Reload** | ❌ Required manual re-auth / reload | ✅ **Dynamic listeners** on `input_text.smartthings_pat` and `input_text.samsung_food_token` (zero restarts) |
-| **Async Architecture** | ⚠️ Synchronous file reads on startup | ✅ Fully non-blocking async executor dispatch and resilient in-memory caching |
-| **Dashboard UI** | 📷 Basic camera entity cards | 🥗 **Pixel-perfect 2-column Dashboard Template** (Food table + aspect-ratio stacked door cameras) |
+| **Food Inventory Tracking** | ❌ Not supported (only camera feeds) | ✅ **AI Food Manager (`sensor.fridge_food_inventory`)**: Tracks active food items, live circular camera crops, stock photos, expiration dates, and item age ("Days Old") |
+| **Live Camera Food Circles** | ❌ Not supported | ✅ **KICS EPA Food Circles**: Retrieves actual circular camera cutouts of food items taken by the fridge's interior camera + seamless fallback to catalog stock photos |
+| **Local Image Caching & HA Protection** | ❌ None | ✅ **Local Image Cache (`/config/www/...`)**: Keeps state attributes lean (~2.2KB) to stay safely under Home Assistant's 16KB database recorder limit, with auto cache-busting and stale file pruning |
+| **Persistence & Cloud Fault Tolerance** | ❌ Memory wiped on reboot; no cloud retry | ✅ **Persistent On-Disk Cache (`inventory.json`)** across Home Assistant reboots + 3-attempt exponential backoff retry on cloud gateway timeouts (502/503/504) |
+| **Inventory Sync Trigger** | ❌ None | ✅ **Automatic door-close triggered sync** with cloud vision commit delay (~12s) + periodic polling |
+| **Token Lifetime & Rotation** | ⚠️ Expired after 24h (PAT), requiring manual recreation | ✅ **Autonomous Multi-Token Rotator microservice**: Headless renewal of SmartThings PAT (every 23h) and Samsung Food / KICS tokens with local REST server and zero downtime |
+| **Dynamic Token Reload** | ❌ Required manual re-auth / integration restart | ✅ **Dynamic listeners** on helper entities (`input_text.smartthings_pat`, `input_text.samsung_food_token`, `input_text.kics_food_token`) and automated Location ID discovery |
+| **Async Architecture** | ⚠️ Synchronous file I/O in event loop | ✅ **100% Non-Blocking**: All file operations, image caching, and network calls offloaded to worker threads via `hass.async_add_executor_job()` |
+| **Authentication Options** | ⚠️ PAT only | ✅ **Multi-Mode Authentication**: Home Assistant Core OAuth2 reuse, Standalone Developer OAuth2, or automated PAT rotation |
+| **Dashboard UI** | 📷 Basic camera entity cards | 🥗 **Production 2-Column Template**: Food inventory table with full-photo click-to-zoom (`target="_blank"`, `🔎`), zero row distortion, and 5:6 aspect-ratio stacked door cameras |
 
 ---
 
-## 🥗 1. AI Food Manager & Inventory Tracking
+## 🥗 1. AI Food Manager & Live Food Circles (KICS EPA Integration)
 
-For Samsung Family Hub refrigerators equipped with the internal AI food vision camera, this version adds a full inventory tracking platform without adding individual entity clutter.
+For Samsung Family Hub refrigerators equipped with internal cameras and AI food vision, this fork provides a comprehensive food inventory tracking platform without entity clutter:
 
 * **Primary Sensor**: [`sensor.fridge_food_inventory`](custom_components/samsung_familyhub_fridge/sensor.py)
-  * **State**: Active food item count (e.g. `33`).
+  * **State**: Total count of active items currently in the fridge (e.g., `33`).
   * **Attributes**:
-    * `total_items`: Total count of active items currently in the fridge.
-    * `last_synced`: ISO timestamp of the last *successful* cloud synchronization.
-    * `items`: Lean array of active item objects (`name`, `added_at` epoch timestamp, and optional `expiration_date` and `image_url` thumbnail), economized to stay safely under Home Assistant's 16KB database attribute threshold.
+    * `total_items`: Total count of active food items.
+    * `last_synced`: ISO timestamp of the last successful cloud synchronization.
+    * `items`: Array of active food objects (`name`, `image_url`, `added_at`, `expiration_date`).
+    * `source`: `kics_epa_live_circles` (or fallback).
+* **Live Camera Food Circles (KICS EPA)**:
+  * Integrates with Samsung's KICS EPA service (`https://kics-epa.samsungepa.com/api/foodlist`) using the refrigerator's Location ID and Samsung Account credentials.
+  * Rather than relying on generic stock photos, the integration displays the **actual circular camera cutouts** generated by the refrigerator's interior camera whenever the doors close.
+* **Dual-Photography Engine with Fallback**:
+  * Prioritizes live circular camera crops. If an item was added manually or lacks a live camera crop, the integration automatically matches and displays catalog stock photography from Samsung Food / Whisk.
+* **Item Age Tracking ("Days Old")**:
+  * Normalizes creation timestamps into epoch seconds (`added_at`), allowing dashboard cards to display how many days an item has been in the fridge (`(now() - added_at) / 86400`).
+* **Automated Location ID Discovery**:
+  * Automatically resolves and caches the refrigerator's Location ID from helper entities (`input_text.kics_location_id`), the rotator microservice, SmartThings device metadata, or local configuration files.
 * **Door-Close Triggered Sync**:
-  * Connected in [`custom_components/samsung_familyhub_fridge/api.py`](custom_components/samsung_familyhub_fridge/api.py): When door contact sensors close and camera snapshot file IDs refresh, a delayed (~12s) background refresh is triggered to allow Samsung's cloud vision models to commit newly detected items.
-* **Resilient In-Memory Caching**:
-  * Implemented in [`SamsungFoodClient._fetch_food_items_sync`](custom_components/samsung_familyhub_fridge/api.py): If a transient network timeout or connection error occurs, existing inventory items are **preserved** in memory rather than wiped to zero, and `last_synced` accurately reflects the timestamp of the last successful sync.
+  * When refrigerator door contact sensors close and camera snapshot file IDs refresh, a delayed (~12s) background refresh is triggered to allow Samsung's cloud vision models to commit newly detected items.
 * **Graceful Opt-In (Zero Clutter for Non-AI Fridges)**:
-  * If no `samsung_food_token.txt` or `input_text.samsung_food_token` is provided, the food inventory sensor and background polling tasks are completely skipped, keeping non-AI fridge instances 100% lightweight and clutter-free.
-* **Manual Refresh Service**:
-  * Added `samsung_familyhub_fridge.refresh_food_inventory` in [`services.yaml`](custom_components/samsung_familyhub_fridge/services.yaml) and [`__init__.py`](custom_components/samsung_familyhub_fridge/__init__.py) for on-demand cloud synchronization.
+  * If no food token is configured, the food inventory sensor and background polling tasks are completely skipped, keeping non-AI fridge setups lightweight.
 
 ---
 
-## 🔑 2. Automated Dual-Token Rotation Microservice (PAT + Samsung Food)
+## 🖼️ 2. High-Performance Local Image Caching & Storage Optimization
 
-To achieve continuous, 100% autonomous operation without human intervention or token expirations, this integration includes a standalone background companion microservice:
-
-* **Standalone Portable Package** (intended to be run on a Linux server outside of Home Assistant): Located in [`tools/pat_rotator/`](tools/pat_rotator/)
-  * **Automated SmartThings PAT Renewal**: [`tools/pat_rotator/generate_pat.py`](tools/pat_rotator/generate_pat.py) uses Playwright browser automation with saved session cookies (`smartthings_session.json`) to log into `account.smartthings.com/tokens` and mint fresh 24-hour tokens with full device scopes every **23 hours**.
-  * **Automated Samsung Food Token Renewal**: [`tools/pat_rotator/generate_food_token.py`](tools/pat_rotator/generate_food_token.py) uses Playwright browser automation with the same saved session cookies to authenticate into `app.samsungfood.com`, extract the active Whisk/Samsung Food token, and rotate it every **28 days** (preventing 30-to-90-day Whisk token expiration).
-  * **Built-in REST Microservice**: [`tools/pat_rotator/main.py`](tools/pat_rotator/main.py) hosts a lightweight HTTP server on port `8765` serving:
-    * `GET http://<SERVER_IP>:8765/pat` ➔ Active SmartThings PAT.
-    * `GET http://<SERVER_IP>:8765/food_token` ➔ Active Samsung Food (Whisk) Token.
-    * `GET http://<SERVER_IP>:8765/tokens` ➔ Combined status payload with both tokens.
-  * **Built-in File Logging**: Direct writes to `rotator.log` with automatic weekly pruning every **Sunday at midnight** (00:00:00) down to the most recent 100 lines.
-  * **Automated Setup**: [`tools/pat_rotator/setup.sh`](tools/pat_rotator/setup.sh) provides 1-command virtual environment creation, dependency installation, and Playwright Chromium setup.
+* **Home Assistant Recorder Protection**:
+  * Refrigerator camera crop URLs are hosted on AWS S3 with extensive signed security parameters. Storing dozens of long remote URLs in Home Assistant entity attributes would produce payloads exceeding 70KB, violating Home Assistant's 16KB database recorder limit and producing database warnings.
+  * This integration downloads image crops locally to `/config/www/samsung_familyhub/food_circles/<clean_id>_<url_hash>.jpg` and exposes them via `/local/samsung_familyhub/food_circles/...`.
+  * **97% Size Reduction**: Shrinks the `sensor.fridge_food_inventory` attribute payload from **>70KB down to ~2.2KB**, eliminating recorder warnings and reducing database overhead.
+* **Automatic Cache-Busting**:
+  * The integration computes an MD5 hash of the canonical S3 image path. When the refrigerator takes a new photo of an item, a new hash is generated, automatically updating the filename and busting browser caches.
+* **Automatic Stale File Pruning**:
+  * On every inventory synchronization, the cache directory is reconciled with active items. Images belonging to consumed or removed food items are automatically deleted (`os.remove()`), preventing orphan files from accumulating on disk.
 
 ---
 
-## ⚡ 3. Dynamic Zero-Restart Token Synchronization
+## 💾 3. On-Disk Persistence & Cloud Gateway Resilience
+
+* **Instant Reboot Restoration (`inventory.json`)**:
+  * In addition to in-memory caching, the active inventory is persisted to `/config/www/samsung_familyhub/food_circles/inventory.json`.
+  * When Home Assistant restarts, the previous inventory state is restored from disk immediately, ensuring dashboards display food items without waiting for the initial cloud poll.
+* **Cloud Gateway Retry & Exponential Backoff**:
+  * Cloud endpoints occasionally return HTTP `502 Bad Gateway`, `503 Service Unavailable`, or `504 Gateway Timeout` during heavy vision processing.
+  * The integration incorporates a 3-attempt retry loop with 30-second socket timeouts and exponential backoff to handle transient gateway errors gracefully.
+* **In-Memory Fallback**:
+  * If the cloud is temporarily unreachable after all retries, existing inventory items are **preserved** in memory rather than wiped to zero, maintaining dashboard continuity.
+
+---
+
+## 🔑 4. Autonomous Multi-Token Rotation Microservice (PAT + Food + KICS)
+
+To achieve continuous, 100% autonomous operation without human intervention or token expirations, this repository includes a standalone background companion microservice in [`tools/pat_rotator/`](tools/pat_rotator/):
+
+* **SmartThings PAT Renewal**: [`tools/pat_rotator/generate_pat.py`](tools/pat_rotator/generate_pat.py) uses headless Playwright automation with saved session cookies (`smartthings_session.json`) to log into `account.smartthings.com/tokens` and mint fresh 24-hour PATs every **23 hours**.
+* **Samsung Food Token Renewal**: [`tools/pat_rotator/generate_food_token.py`](tools/pat_rotator/generate_food_token.py) rotates Samsung Food / Whisk tokens every **28 days**.
+* **KICS Food Circles Token Provisioning**: [`tools/pat_rotator/generate_kics_token.py`](tools/pat_rotator/generate_kics_token.py) validates and provisions bearer tokens for live circular camera crops.
+* **Built-in REST Microservice**: [`tools/pat_rotator/main.py`](tools/pat_rotator/main.py) hosts a lightweight HTTP server on port `8765` serving:
+  * `GET http://<SERVER_IP>:8765/pat` ➔ Active SmartThings PAT.
+  * `GET http://<SERVER_IP>:8765/food_token` ➔ Active Samsung Food (Whisk) Token.
+  * `GET http://<SERVER_IP>:8765/kics_token` ➔ Active KICS Food Circles Token.
+  * `GET http://<SERVER_IP>:8765/location_id` ➔ Refrigerator Location ID.
+  * `GET http://<SERVER_IP>:8765/tokens` ➔ Combined payload with all tokens and location details.
+  * `GET http://<SERVER_IP>:8765/health` ➔ Service health and token availability status.
+* **Automated Log Maintenance**: Writes directly to `rotator.log` and automatically trims it every **Sunday at midnight** down to the most recent 100 lines.
+* **1-Command Setup**: [`tools/pat_rotator/setup.sh`](tools/pat_rotator/setup.sh) provides automated environment creation, dependency installation, and Playwright Chromium setup.
+
+---
+
+## ⚡ 5. Dynamic Zero-Restart Token Synchronization & Non-Blocking Async
 
 * **Dynamic State Listeners**:
-  * Implemented in [`custom_components/samsung_familyhub_fridge/api.py`](custom_components/samsung_familyhub_fridge/api.py): Listens for state changes on `input_text.smartthings_pat` and `input_text.samsung_food_token`.
-  * When a new PAT is fetched by the Home Assistant REST sensor automation, the integration updates the config entry on disk and reloads the API client dynamically without requiring Home Assistant reboots.
-* **Non-Blocking Async Event Loop**:
-  * Offloads all file reads (`samsung_food_token.txt`, `smartthings_pat.txt`) and synchronous HTTP calls to Home Assistant's threadpool executor via `hass.async_add_executor_job()`, eliminating `Detected blocking call inside event loop` warnings.
+  * Implemented in [`custom_components/samsung_familyhub_fridge/api.py`](custom_components/samsung_familyhub_fridge/api.py): Listens for state changes on `input_text.smartthings_pat`, `input_text.samsung_food_token`, and `input_text.kics_food_token`.
+  * When a new token is fetched by Home Assistant REST sensors, the integration updates the config entry on disk and reloads the API client dynamically without requiring Home Assistant reboots.
+* **100% Non-Blocking Event Loop**:
+  * All file I/O, cache loading, image downloads, and HTTP requests are offloaded to Home Assistant's thread pool executor via `hass.async_add_executor_job()`, eliminating `Detected blocking call inside event loop` warnings.
 
 ---
 
-## 🔐 4. Multi-Mode Authentication & Modern OAuth2 Support
+## 🔐 6. Multi-Mode Authentication & Modern OAuth2 Support
 
 * **Flexible Auth Modes** in [`custom_components/samsung_familyhub_fridge/config_flow.py`](custom_components/samsung_familyhub_fridge/config_flow.py) & [`__init__.py`](custom_components/samsung_familyhub_fridge/__init__.py):
   1. `oauth`: Reuses credentials from Home Assistant core's built-in `smartthings` integration via `config_entry_oauth2_flow`.
   2. `standalone_oauth`: Direct SmartThings Developer OAuth2 credentials with automatic refresh token persistence.
-  3. `pat`: Legacy / rotated Personal Access Token support with auto-reload.
+  3. `pat`: Personal Access Token support with autonomous local rotation.
 
 ---
 
-## 🛠️ 5. Samsung Food Token Extractor Utility
+## 🛠️ 7. Token Extractor & Inspection Utilities
 
-* **Script**: [`scripts/dump_samsung_food.py`](scripts/dump_samsung_food.py)
-  * Playwright utility to authenticate with Samsung SSO / Samsung Food (Whisk).
-  * Captures long-lived Bearer tokens and stores them in `samsung_food_token.txt`.
-  * Handles cursor-based multi-page pagination (`paging.cursors.after`) across hundreds of account food items.
-  * Automatic reCAPTCHA detection with fallback logging.
+* **KICS Food Circles Inspector**: [`scripts/get_food_circles.py`](scripts/get_food_circles.py)
+  * CLI utility to test KICS EPA endpoints, inspect raw cloud payloads, and extract live food circles directly.
+* **Samsung Food Token Extractor**: [`scripts/dump_samsung_food.py`](scripts/dump_samsung_food.py)
+  * Playwright utility to authenticate with Samsung SSO / Samsung Food (Whisk) and extract tokens with pagination support.
+* **Standalone Token Validator**: [`tools/pat_rotator/generate_kics_token.py`](tools/pat_rotator/generate_kics_token.py)
+  * Validates KICS bearer tokens against the live EPA endpoint.
 
 ---
 
-## 📊 6. Production Dashboard Card Templates
+## 📊 8. Production Dashboard Card Templates & Full-Photo Viewer
 
 * Documented in [`README.md`](README.md#dashboard-card-templates):
+  * **DOMPurify-Compliant Markdown Table**: Uses clean, whitelist-approved HTML (`<a>`, `<img>`, `target="_blank"`, `title`) to ensure compatibility with Home Assistant's frontend sanitization.
+  * **Zero-Distortion Full-Photo Viewing**:
+    * Clicking either the 32x32 thumbnail or the `🔎` icon next to the food name opens the full-resolution camera crop in a new browser tab with native zoom support.
+    * Table rows and column widths remain 100% fixed, compact, and aligned with zero dimensional shifting.
   * **2-Column Balanced 50/50 Layout**: Places the responsive Food Inventory table side-by-side with stacked door camera feeds.
-  * **Relative Elapsed Age ("Days Old")**: Automatically computes elapsed days from epoch timestamps (`(now() - added_at) / 86400`).
-  * **Fixed Column Widths & Alignments**: Locks Food Name to 160px and Days Old to 75px with vertical/horizontal flex centering across all headers and rows.
-  * **Native Table Formatting**: Uses an SVG placeholder image fallback to force 100% pixel-perfect equal row heights whether an item has a catalog icon or not.
-  * **Camera Aspect Ratio**: Standardizes door camera feeds to `5:6` aspect ratio for clean visual stacking.
+  * **Standardized 5:6 Camera Aspect Ratio**: Standardizes door camera feeds (`camera.family_hub_top` and `camera.family_hub_middle`) to a clean `5:6` aspect ratio for vertical stacking.
 
 ---
 
 ## 📁 Key File Index
 
-* [`custom_components/samsung_familyhub_fridge/api.py`](custom_components/samsung_familyhub_fridge/api.py) — Core coordinator, `SamsungFoodClient`, `SamsungFoodCoordinator`, dynamic state listeners, and caching.
+* [`custom_components/samsung_familyhub_fridge/api.py`](custom_components/samsung_familyhub_fridge/api.py) — Core coordinator, `SamsungFoodClient`, `SamsungFoodCoordinator`, KICS EPA client, local image caching, and retry logic.
 * [`custom_components/samsung_familyhub_fridge/sensor.py`](custom_components/samsung_familyhub_fridge/sensor.py) — `SamsungFridgeFoodInventorySensor` platform setup and opt-in validation.
-* [`custom_components/samsung_familyhub_fridge/const.py`](custom_components/samsung_familyhub_fridge/const.py) — Constants and endpoint configurations.
-* [`custom_components/samsung_familyhub_fridge/services.yaml`](custom_components/samsung_familyhub_fridge/services.yaml) — Integration service declarations.
-* [`tools/pat_rotator/main.py`](tools/pat_rotator/main.py) — Standalone PAT rotator service with file logging and weekly Sunday cleanup.
-* [`tools/pat_rotator/generate_pat.py`](tools/pat_rotator/generate_pat.py) — Playwright PAT automation generator.
+* [`custom_components/samsung_familyhub_fridge/const.py`](custom_components/samsung_familyhub_fridge/const.py) — Constants and endpoint declarations for KICS EPA and Whisk.
+* [`custom_components/samsung_familyhub_fridge/services.yaml`](custom_components/samsung_familyhub_fridge/services.yaml) — Integration service declarations (`refresh_food_inventory`).
+* [`tools/pat_rotator/main.py`](tools/pat_rotator/main.py) — Standalone Multi-Token rotator microservice with REST endpoints, file logging, and weekly pruning.
+* [`tools/pat_rotator/generate_pat.py`](tools/pat_rotator/generate_pat.py) — Automated SmartThings PAT renewal.
+* [`tools/pat_rotator/generate_food_token.py`](tools/pat_rotator/generate_food_token.py) — Automated Samsung Food (Whisk) token renewal.
+* [`tools/pat_rotator/generate_kics_token.py`](tools/pat_rotator/generate_kics_token.py) — KICS Food Circles token validation and provisioning.
+* [`scripts/get_food_circles.py`](scripts/get_food_circles.py) — Interactive KICS EPA inspection and extraction script.
 * [`scripts/dump_samsung_food.py`](scripts/dump_samsung_food.py) — Samsung Food API authentication and token extractor.
+* [`tests/test_kics_food_circles.py`](tests/test_kics_food_circles.py) — Unit test suite for KICS food circles, fallbacks, and token validation.
 * [`README.md`](README.md) — Main installation, configuration, and dashboard documentation.
 
 ---
 
-## 📌 To-Do / Planned Investigations
+## 🔮 Future Roadmap
 
-- [ ] **Confirm Cloud vs. Local Storage for AI Bounding-Box Thumbnails**:
-  * Perform an isolation experiment (disconnect refrigerator from Wi-Fi, clear SmartThings mobile app storage/cache, and test if AI Food Manager thumbnails load over cellular) to definitively confirm whether the on-device top-down camera crops are stored in Samsung Cloud or strictly served from the refrigerator hardware's local Tizen memory.
-  * If cloud storage endpoints exist, investigate their retrieval for Home Assistant.
-
+* Optional Lovelace custom card with an integrated lightbox modal viewer.
+* Shelf compartment coordinate mapping if exposed in future Samsung Family Hub firmware releases.

@@ -158,7 +158,7 @@ For Samsung Family Hub refrigerators equipped with the internal AI food camera /
 ### Setup (Opt-In):
 
 * **Method 1: Fully Automated Continuous Operation (Recommended)**:
-  Run the companion **Dual Token Rotator microservice** located in [`tools/pat_rotator/`](tools/pat_rotator/README.md). It runs on any Linux machine or server, automatically rotating your **SmartThings PAT (every 23 hours)** and **Samsung Food Token (every 28 days)** in the background and serving them to Home Assistant over local REST endpoints with zero downtime.
+  Run the companion **Tri-Token Rotator microservice** located in [`tools/pat_rotator/`](tools/pat_rotator/README.md). It runs on any Linux machine or server, automatically rotating your **SmartThings PAT (every 23 hours)**, **Samsung Food Token (every 28 days)**, and **KICS Live Food Circles Token** in the background and serving them to Home Assistant over local REST endpoints with zero downtime.
 
 * **Method 2: One-Time Manual Token Generation**:
   1. Run the Samsung Food authentication extractor on a machine with a browser (or headless):
@@ -200,7 +200,7 @@ views:
           {% set raw_ts = item.added_at | int(0) -%}
           {% set sec_ts = (raw_ts / 1000) if raw_ts > 10000000000 else raw_ts -%}
           {% set days_old = ((now_ts - sec_ts) / 86400) | round(0, 'floor') | int if sec_ts > 0 else '—' -%}
-          | {% if item.image_url %}<img src="{{ item.image_url }}" width="32" height="32" style="border-radius:6px;object-fit:cover;vertical-align:middle;display:inline-block;"/>{% else %}<img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='24' font-size='22'%3E🍽️%3C/text%3E%3C/svg%3E" width="32" height="32" style="border-radius:6px;vertical-align:middle;display:inline-block;"/>{% endif %} | **{{ item.name }}**{% if item.expiration_date %}<br/><small>⏳ Exp: {{ item.expiration_date }}</small>{% endif %} | {{ days_old }} |
+          | {% if item.image_url %}<a href="{{ item.image_url }}" target="_blank" title="View full photo"><img src="{{ item.image_url }}" width="32" height="32"/></a>{% else %}<img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='24' font-size='22'%3E🍽️%3C/text%3E%3C/svg%3E" width="32" height="32"/>{% endif %} | **{{ item.name }}**{% if item.image_url %} <a href="{{ item.image_url }}" target="_blank" title="View full photo">🔎</a>{% endif %}{% if item.expiration_date %}<br/><small>⏳ Exp: {{ item.expiration_date }}</small>{% endif %} | {{ days_old }} |
           {% endfor %}
 
       # Right Column: ~50% Wider Stacked Door Cameras

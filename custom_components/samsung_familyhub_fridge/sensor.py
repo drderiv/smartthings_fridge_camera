@@ -7,7 +7,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, CONF_DEVICE_ID, CONF_FOOD_TOKEN
+from .const import DOMAIN, CONF_DEVICE_ID, CONF_FOOD_TOKEN, CONF_KICS_TOKEN, CONF_LOCATION_ID
 from .api import (
     DataCoordinator,
     SamsungFoodClient,
@@ -29,9 +29,10 @@ async def async_setup_entry(
 
     device_id = config_entry.data.get(CONF_DEVICE_ID) or "samsung_familyhub"
 
-    # Opt-in: Check if Samsung Food (Whisk) AI Food Manager token is available
-    food_token = config_entry.data.get(CONF_FOOD_TOKEN)
-    food_client = SamsungFoodClient(hass, token=food_token)
+    # Opt-in: Check if Samsung Food (Whisk) or KICS Food Circles token is available
+    food_token = config_entry.data.get(CONF_FOOD_TOKEN) or config_entry.data.get(CONF_KICS_TOKEN)
+    location_id = config_entry.data.get(CONF_LOCATION_ID) or getattr(hub, "_location_id", None)
+    food_client = SamsungFoodClient(hass, token=food_token, location_id=location_id)
 
     if await food_client.async_has_token():
         _LOGGER.info("Samsung Food token detected. Initializing AI Food Manager inventory sensor.")

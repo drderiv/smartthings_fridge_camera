@@ -24,6 +24,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 TOKEN_FILE = os.path.join(BASE_DIR, "smartthings_pat.txt")
 FOOD_TOKEN_FILE = os.path.join(BASE_DIR, "samsung_food_token.txt")
+KICS_TOKEN_FILE = os.path.join(BASE_DIR, "kics_food_token.txt")
+ACTIVE_BEARER_FILE = os.path.join(BASE_DIR, "active_bearer_token.txt")
 SESSION_FILE = os.path.join(BASE_DIR, "smartthings_session.json")
 LOG_FILE = os.path.join(BASE_DIR, "rotator.log")
 
@@ -135,6 +137,18 @@ class PATHandler(BaseHTTPRequestHandler):
                 _LOGGER.error("Error reading %s: %s", filepath, err)
         return None
 
+    def _read_location_id(self) -> str | None:
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                    loc = cfg.get("location_id")
+                    if loc and str(loc).strip() and not str(loc).startswith("YOUR_"):
+                        return str(loc).strip()
+            except Exception as err:
+                _LOGGER.debug("Error reading location_id from %s: %s", CONFIG_FILE, err)
+        return None
+
     def do_GET(self):
         # 1. SmartThings PAT endpoint
         if self.path in ("/pat", "/pat/"):
@@ -154,16 +168,17 @@ class PATHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(response).encode("utf-8"))
                 _LOGGER.warning("PAT requested by %s but token file is empty or missing.", self.client_address[0])
 
-        # 2. Samsung Food (Whisk) Token endpoint
+        # 2. Samsung Food / KICS Food Circles Token endpoint
         elif self.path in ("/food_token", "/food_token/"):
-            token = self._read_file_token(FOOD_TOKEN_FILE)
+            token = self._read_file_token(FOOD_TOKEN_FILE) or self._read_file_token(KICS_TOKEN_FILE) or self._read_file_token(ACTIVE_BEARER_FILE)
+            loc = self._read_location_id()
             if token:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                response = {"token": token, "status": "ok", "type": "samsung_food_token"}
+                response = {"token": token, "location_id": loc, "status": "ok", "type": "samsung_food_token"}
                 self.wfile.write(json.dumps(response).encode("utf-8"))
-                _LOGGER.info("Served Samsung Food token to client %s", self.client_address[0])
+                _LOGGER.info("Served Samsung Food (Whisk) token to client %s", self.client_address[0])
             else:
                 self.send_response(503)
                 self.send_header("Content-Type", "application/json")
@@ -172,27 +187,69 @@ class PATHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(response).encode("utf-8"))
                 _LOGGER.warning("Samsung Food token requested by %s but token file is empty or missing.", self.client_address[0])
 
-        # 3. Combined Tokens endpoint
+        # 3. Samsung Family Hub Live Food Circles (KICS EPA) Token endpoint
+        elif self.path in ("/kics_token", "/kics_token/", "/food_circles_token", "/food_circles_token/"):
+            token = self._read_file_token(KICS_TOKEN_FILE) or self._read_file_token(ACTIVE_BEARER_FILE)
+            loc = self._read_location_id()
+            if token:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                response = {"token": token, "location_id": loc, "status": "ok", "type": "samsung_kics_food_token"}
+                self.wfile.write(json.dumps(response).encode("utf-8"))
+                _LOGGER.info("Served KICS Food Circles token to client %s", self.client_address[0])
+            else:
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                response = {"error": "KICS token not generated yet", "status": "unavailable"}
+                self.wfile.write(json.dumps(response).encode("utf-8"))
+                _LOGGER.warning("KICS token requested by %s but token file is empty or missing.", self.client_address[0])
+
+        # 4. Location ID endpoint
+        elif self.path in ("/location_id", "/location_id/", "/location", "/location/"):
+            loc = self._read_location_id()
+            if loc:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                response = {"location_id": loc, "status": "ok"}
+                self.wfile.write(json.dumps(response).encode("utf-8"))
+                _LOGGER.info("Served Location ID to client %s", self.client_address[0])
+            else:
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                response = {"error": "location_id not configured in config.json", "status": "unavailable"}
+                self.wfile.write(json.dumps(response).encode("utf-8"))
+
+        # 5. Combined Tokens endpoint
         elif self.path in ("/tokens", "/tokens/"):
             pat = self._read_file_token(TOKEN_FILE)
             food_token = self._read_file_token(FOOD_TOKEN_FILE)
+            kics_token = self._read_file_token(KICS_TOKEN_FILE) or self._read_file_token(ACTIVE_BEARER_FILE)
+            loc = self._read_location_id()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             response = {
                 "smartthings_pat": pat,
                 "samsung_food_token": food_token,
+                "kics_token": kics_token,
+                "kics_food_token": kics_token,
+                "location_id": loc,
                 "pat": pat,
                 "food_token": food_token,
-                "status": "ok" if (pat or food_token) else "empty",
+                "status": "ok" if (pat or food_token or kics_token) else "empty",
             }
             self.wfile.write(json.dumps(response).encode("utf-8"))
             _LOGGER.info("Served combined tokens to client %s", self.client_address[0])
 
-        # 4. Health endpoint
+        # 5. Health endpoint
         elif self.path in ("/health", "/health/"):
             pat_ok = self._read_file_token(TOKEN_FILE) is not None
             food_ok = self._read_file_token(FOOD_TOKEN_FILE) is not None
+            kics_ok = (self._read_file_token(KICS_TOKEN_FILE) is not None) or (self._read_file_token(ACTIVE_BEARER_FILE) is not None)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -200,6 +257,7 @@ class PATHandler(BaseHTTPRequestHandler):
                 "status": "healthy",
                 "smartthings_pat_available": pat_ok,
                 "samsung_food_token_available": food_ok,
+                "kics_food_token_available": kics_ok,
             }
             self.wfile.write(json.dumps(response).encode("utf-8"))
 
@@ -375,9 +433,10 @@ def main():
     # Start HTTP server
     server = HTTPServer(("0.0.0.0", port), PATHandler)
     _LOGGER.info("==========================================================")
-    _LOGGER.info(" Samsung FamilyHub Dual Token Rotator Server (Port %d)", port)
+    _LOGGER.info(" Samsung FamilyHub Token Rotator Server (Port %d)", port)
     _LOGGER.info(" - SmartThings PAT:      http://<SERVER_IP>:%d/pat (every %dh)", port, pat_interval_hours)
     _LOGGER.info(" - Samsung Food Token:   http://<SERVER_IP>:%d/food_token (every %dd)", port, food_interval_days)
+    _LOGGER.info(" - Live Food Circles:    http://<SERVER_IP>:%d/kics_token", port)
     _LOGGER.info(" - Combined Status:      http://<SERVER_IP>:%d/tokens", port)
     _LOGGER.info(" - 2FA Method:           %s", two_factor_method)
     _LOGGER.info(" - Log file:             %s (auto-pruned weekly)", LOG_FILE)
