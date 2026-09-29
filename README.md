@@ -258,9 +258,10 @@ Credits
 
 This integration was developed by [ibielopolskyi][ibielopolskyi].<br/>
 HACS integration was added by [CurryPlayer][curryplayer].<br/>
-Special thanks to [HalloTschuess][hallotschuess] and [TryTryAgain][trytryagain].<br/>
+Special thanks to [HalloTschuess][hallotschuess], [TryTryAgain][trytryagain], and [Gemini 3.8 Flash][gemini].<br/>
 
 [ibielopolskyi]: https://github.com/ibielopolskyi
 [curryplayer]: https://github.com/CurryPlayer
 [hallotschuess]: https://github.com/HalloTschuess
 [trytryagain]: https://github.com/TryTryAgain
+[gemini]: https://deepmind.google/technologies/gemini/
