@@ -505,9 +505,20 @@ class InvalidAuth(HomeAssistantError):
 class SamsungFamilyHubOptionsFlow(config_entries.OptionsFlow):
     """Handle options for Samsung FamilyHub Fridge & AI Food Manager."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+    def __init__(self, config_entry: Any = None) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
+        self._custom_config_entry = config_entry
+
+    @property
+    def _entry(self) -> Any:
+        """Safely resolve config_entry across all Home Assistant versions."""
+        try:
+            val = self.config_entry
+            if val is not None:
+                return val
+        except Exception:
+            pass
+        return getattr(self, "_custom_config_entry", None)
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -516,19 +527,23 @@ class SamsungFamilyHubOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
+        entry = self._entry
+        options = entry.options if entry else {}
+        data = entry.data if entry else {}
+
         rotator_url = (
-            self.config_entry.options.get(CONF_ROTATOR_URL)
-            or self.config_entry.data.get(CONF_ROTATOR_URL)
+            options.get(CONF_ROTATOR_URL)
+            or data.get(CONF_ROTATOR_URL)
             or DEFAULT_ROTATOR_URL
         )
         location_id = (
-            self.config_entry.options.get(CONF_LOCATION_ID)
-            or self.config_entry.data.get(CONF_LOCATION_ID)
+            options.get(CONF_LOCATION_ID)
+            or data.get(CONF_LOCATION_ID)
             or ""
         )
         food_interval = int(
-            self.config_entry.options.get(CONF_FOOD_UPDATE_INTERVAL)
-            or self.config_entry.data.get(CONF_FOOD_UPDATE_INTERVAL)
+            options.get(CONF_FOOD_UPDATE_INTERVAL)
+            or data.get(CONF_FOOD_UPDATE_INTERVAL)
             or DEFAULT_FOOD_UPDATE_INTERVAL
         )
 
@@ -544,3 +559,4 @@ class SamsungFamilyHubOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             data_schema=schema,
         )
+
