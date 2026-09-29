@@ -11,6 +11,8 @@ samsung_food_token.txt
 *samsung_food_token.txt
 kics_food_token.txt
 *kics_food_token.txt
+kics_refresh_token.txt
+*kics_refresh_token.txt
 active_bearer_token.txt
 *active_bearer_token.txt
 config.json

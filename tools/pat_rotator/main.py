@@ -19,12 +19,14 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # Import local generators
 from generate_pat import generate_pat, InteractiveAuthRequired
 from generate_food_token import generate_food_token
+from generate_kics_token import rotate_kics_token
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 TOKEN_FILE = os.path.join(BASE_DIR, "smartthings_pat.txt")
 FOOD_TOKEN_FILE = os.path.join(BASE_DIR, "samsung_food_token.txt")
 KICS_TOKEN_FILE = os.path.join(BASE_DIR, "kics_food_token.txt")
+KICS_REFRESH_TOKEN_FILE = os.path.join(BASE_DIR, "kics_refresh_token.txt")
 ACTIVE_BEARER_FILE = os.path.join(BASE_DIR, "active_bearer_token.txt")
 SESSION_FILE = os.path.join(BASE_DIR, "smartthings_session.json")
 LOG_FILE = os.path.join(BASE_DIR, "rotator.log")
@@ -385,6 +387,51 @@ def food_rotation_loop(email: str, password: str, interval_days: int = 28):
             time.sleep(3600)
 
 
+def kics_rotation_loop(interval_hours: int = 23):
+    """Background thread that periodically refreshes the KICS access token using the rolling refresh token."""
+    max_seconds = interval_hours * 3600
+    age = get_token_age(KICS_TOKEN_FILE)
+    if age is not None and age < max_seconds:
+        remaining = max_seconds - age
+        _LOGGER.info(
+            "Existing KICS Food Circles token in %s is still fresh (age: %.1f hours). Scheduling next rotation in %.1f hours.",
+            os.path.basename(KICS_TOKEN_FILE),
+            age / 3600.0,
+            remaining / 3600.0,
+        )
+        time.sleep(remaining)
+    else:
+        _LOGGER.info("Checking KICS Food Circles token rotation on startup...")
+
+    while True:
+        has_refresh_token = os.path.exists(KICS_REFRESH_TOKEN_FILE)
+        if not has_refresh_token and os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                has_refresh_token = bool(cfg.get("kics_refresh_token"))
+            except Exception:
+                pass
+
+        if has_refresh_token:
+            try:
+                _LOGGER.info("Executing scheduled %d-hour KICS token refresh via OAuth...", interval_hours)
+                new_token = rotate_kics_token(
+                    refresh_token_file=KICS_REFRESH_TOKEN_FILE,
+                    output_file=KICS_TOKEN_FILE,
+                    config_file=CONFIG_FILE,
+                )
+                _LOGGER.info("KICS token successfully refreshed: %s...", new_token[:8])
+                _LOGGER.info("Sleeping for %d hours until next scheduled KICS refresh...", interval_hours)
+                time.sleep(max_seconds)
+            except Exception as err:
+                _LOGGER.error("Failed to refresh KICS token in background loop: %s", err)
+                _LOGGER.info("Will retry in 10 minutes...")
+                time.sleep(600)
+        else:
+            time.sleep(3600)
+
+
 def main():
     if not os.path.exists(CONFIG_FILE):
         _LOGGER.error("Config file not found: %s", CONFIG_FILE)
@@ -399,6 +446,7 @@ def main():
     port = int(config.get("port", 8765))
     pat_interval_hours = int(config.get("rotation_interval_hours", 23))
     food_interval_days = int(config.get("food_rotation_interval_days", 28))
+    kics_interval_hours = int(config.get("kics_rotation_interval_hours", 23))
 
     two_factor_method = config.get("two_factor_method", "device")
 
@@ -430,13 +478,21 @@ def main():
     )
     food_thread.start()
 
+    # Start KICS token rotation thread in background (every 20 hours)
+    kics_thread = threading.Thread(
+        target=kics_rotation_loop,
+        args=(kics_interval_hours,),
+        daemon=True,
+    )
+    kics_thread.start()
+
     # Start HTTP server
     server = HTTPServer(("0.0.0.0", port), PATHandler)
     _LOGGER.info("==========================================================")
     _LOGGER.info(" Samsung FamilyHub Token Rotator Server (Port %d)", port)
     _LOGGER.info(" - SmartThings PAT:      http://<SERVER_IP>:%d/pat (every %dh)", port, pat_interval_hours)
     _LOGGER.info(" - Samsung Food Token:   http://<SERVER_IP>:%d/food_token (every %dd)", port, food_interval_days)
-    _LOGGER.info(" - Live Food Circles:    http://<SERVER_IP>:%d/kics_token", port)
+    _LOGGER.info(" - Live Food Circles:    http://<SERVER_IP>:%d/kics_token (every %dh)", port, kics_interval_hours)
     _LOGGER.info(" - Combined Status:      http://<SERVER_IP>:%d/tokens", port)
     _LOGGER.info(" - 2FA Method:           %s", two_factor_method)
     _LOGGER.info(" - Log file:             %s (auto-pruned weekly)", LOG_FILE)
