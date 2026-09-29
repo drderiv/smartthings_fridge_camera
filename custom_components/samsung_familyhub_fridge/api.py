@@ -125,14 +125,49 @@ class DataCoordinator(DataUpdateCoordinator):
         for entry in hass.config_entries.async_entries("samsung_familyhub_fridge"):
             entry.async_on_unload(_unsubscribe)
 
+    def _resolve_rotator_url(self) -> str:
+        """Resolve the rotator base URL from integration entries, helpers, or defaults."""
+        entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
+        for entry in entries:
+            opt = entry.options.get(CONF_ROTATOR_URL) or entry.data.get(CONF_ROTATOR_URL)
+            if opt and str(opt).strip():
+                return str(opt).strip().rstrip("/")
+        try:
+            state = self._hass.states.get(ROTATOR_URL_ENTITY)
+            if state and state.state not in ("unknown", "unavailable", "None", ""):
+                return state.state.strip().rstrip("/")
+        except Exception:
+            pass
+        env_url = os.environ.get("PAT_ROTATOR_URL")
+        if env_url and env_url.strip():
+            return env_url.strip().rstrip("/")
+        return DEFAULT_ROTATOR_URL.rstrip("/")
+
     async def _async_update_data(self):
         """Fetch data from API endpoint."""
         
         # ── Dynamic Token Refresh & Persistence ────────────────────────────
-        # If input_text.smartthings_pat holds a valid non-empty value, we sync
-        # it into self.api.token and write it back to the config entry on disk.
-        # This keeps the integration functional without restarts and avoids
-        # "Re-authenticate" repair flows.
+        # 1. Directly query companion rotator REST server if reachable
+        rotator_base = self._resolve_rotator_url()
+        try:
+            r = await self._hass.async_add_executor_job(
+                lambda: requests.get(f"{rotator_base}/pat", timeout=2)
+            )
+            if r.ok:
+                pat_tok = r.json().get("token")
+                if pat_tok and pat_tok.strip() and pat_tok.strip() != self.api.token:
+                    _LOGGER.info("Picked up fresh SmartThings PAT directly from rotator (%s/pat)", rotator_base)
+                    self.api.update_token(pat_tok.strip())
+                    entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
+                    for entry in entries:
+                        if entry.data.get("token") != pat_tok.strip():
+                            new_data = {**entry.data, "token": pat_tok.strip()}
+                            self._hass.config_entries.async_update_entry(entry, data=new_data)
+                            _LOGGER.info("Updated config entry on disk with new SmartThings PAT")
+        except Exception:
+            pass
+
+        # 2. Fallback to helper entity if input_text.smartthings_pat exists
         state = self._hass.states.get(_TOKEN_ENTITY)
         if state and state.state not in ("unknown", "unavailable", ""):
             live_token = state.state.strip()
@@ -202,6 +237,25 @@ class DataCoordinator(DataUpdateCoordinator):
             # Reset failure count on success
             self._consecutive_failures = 0
         except AuthenticationError as err:
+            # Attempt emergency recovery directly from rotator before failing
+            rotator_base = self._resolve_rotator_url()
+            try:
+                r = await self._hass.async_add_executor_job(
+                    lambda: requests.get(f"{rotator_base}/pat", timeout=2)
+                )
+                if r.ok:
+                    pat_tok = r.json().get("token")
+                    if pat_tok and pat_tok.strip() and pat_tok.strip() != self.api.token:
+                        _LOGGER.info("Recovered from auth error with fresh PAT from rotator (%s/pat)", rotator_base)
+                        self.api.update_token(pat_tok.strip())
+                        entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
+                        for entry in entries:
+                            new_data = {**entry.data, "token": pat_tok.strip()}
+                            self._hass.config_entries.async_update_entry(entry, data=new_data)
+                        return await self._async_update_data()
+            except Exception:
+                pass
+
             state = self._hass.states.get(_TOKEN_ENTITY)
             if state is not None and state.state in ("unknown", "unavailable"):
                 _LOGGER.warning(

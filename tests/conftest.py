@@ -244,6 +244,7 @@ class _DataUpdateCoordinator:
         self.logger = logger
         self.name = name
         self.update_interval = update_interval
+        self.data = None
 
 
 class _CoordinatorEntity:

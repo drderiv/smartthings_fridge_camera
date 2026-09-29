@@ -3,7 +3,7 @@
 import json
 import pytest
 import requests_mock
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 
 from custom_components.samsung_familyhub_fridge.const import (
     KICS_FOODLIST_ENDPOINT,
@@ -277,4 +277,40 @@ async def test_options_flow_renders_and_saves():
     assert save_result["data"][CONF_ROTATOR_URL] == "http://10.0.0.50:8765"
     assert save_result["data"][CONF_LOCATION_ID] == "loc-guid-custom"
     assert save_result["data"][CONF_FOOD_UPDATE_INTERVAL] == 300
+
+
+@pytest.mark.asyncio
+async def test_data_coordinator_direct_rotator_pat_fetch(mock_hass):
+    """Test DataCoordinator automatically fetches fresh PAT directly from rotator REST server."""
+    from custom_components.samsung_familyhub_fridge.api import DataCoordinator, FamilyHub
+
+    async def _mock_run(func, *args):
+        return func(*args)
+    mock_hass.async_add_executor_job = AsyncMock(side_effect=_mock_run)
+
+    api = FamilyHub(mock_hass, token="old_token_123", device_id="test_device_id")
+    api.async_ensure_fresh_token = AsyncMock()
+    api.get_all_device_status = MagicMock(return_value={"components": {}})
+    api.set_device_status = MagicMock()
+    api.should_update = False
+    api.get_file_ids = MagicMock(return_value=["file1"])
+    api.download_images = MagicMock(return_value=True)
+
+    mock_entry = MagicMock()
+    mock_entry.options = {}
+    mock_entry.data = {"token": "old_token_123"}
+    mock_entry.entry_id = "test_entry_id"
+    mock_hass.config_entries.async_entries.return_value = [mock_entry]
+
+    coordinator = DataCoordinator(mock_hass, api)
+
+    with requests_mock.Mocker() as m:
+        m.get("http://127.0.0.1:8765/pat", json={"token": "fresh_rotator_pat_999"}, status_code=200)
+        await coordinator._async_update_data()
+
+        assert api.token == "fresh_rotator_pat_999"
+        mock_hass.config_entries.async_update_entry.assert_called_with(
+            mock_entry, data={"token": "fresh_rotator_pat_999"}
+        )
+
 

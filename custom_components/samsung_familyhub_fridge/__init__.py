@@ -45,9 +45,11 @@ from .const import (
     CONF_OAUTH_CLIENT_ID,
     CONF_OAUTH_CLIENT_SECRET,
     CONF_OAUTH_REFRESH_TOKEN,
+    CONF_ROTATOR_URL,
     CONF_SAMSUNG_IOT_AUTH_SERVER,
     CONF_SAMSUNG_IOT_REFRESH_TOKEN,
     CONF_TOKEN,
+    DEFAULT_ROTATOR_URL,
     DOMAIN,
     SMARTTHINGS_DOMAIN,
 )
@@ -69,8 +71,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     elif auth_mode == AUTH_MODE_STANDALONE_OAUTH:
         hub = await _build_standalone_oauth_hub(hass, entry, device_id)
     else:
-        # Legacy PAT path — unchanged from v0.0.x.
+        # Legacy PAT path — check rotator for active token
         token = entry.data.get(CONF_TOKEN)
+        rotator_url = (
+            entry.options.get(CONF_ROTATOR_URL)
+            or entry.data.get(CONF_ROTATOR_URL)
+            or DEFAULT_ROTATOR_URL
+        )
+        if rotator_url:
+            try:
+                import requests
+                r = await hass.async_add_executor_job(
+                    lambda: requests.get(f"{rotator_url.rstrip('/')}/pat", timeout=2)
+                )
+                if r.ok:
+                    fresh_pat = r.json().get("token")
+                    if fresh_pat and fresh_pat.strip():
+                        token = fresh_pat.strip()
+                        _LOGGER.info("Loaded fresh SmartThings PAT from rotator on startup")
+            except Exception:
+                pass
+
         if not token:
             raise ConfigEntryNotReady(
                 "PAT-mode config entry has no token. Reconfigure the "

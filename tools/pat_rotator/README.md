@@ -116,18 +116,30 @@ You can inspect these files to immediately see the exact screen that was display
 
 ## Home Assistant Configuration
 
-### 1. Create Helper Entities
-In Home Assistant: **Settings → Devices & Services → Helpers → Create Helper → Text**:
-* **Helper 1 (PAT)**:
-  * Name: `smartthings_pat`
-  * Entity ID: `input_text.smartthings_pat`
-  * Max Length: `255`
-* **Helper 2 (Food Token)**:
-  * Name: `samsung_food_token`
-  * Entity ID: `input_text.samsung_food_token`
-  * Max Length: `255`
+### ✨ Recommended (v1.1.0+: Zero YAML Needed!)
+Starting with integration version **v1.1.0**, you do **NOT** need any REST sensors in `configuration.yaml` or automations!
 
-### 2. Add REST Sensors to `configuration.yaml`
+1. In Home Assistant, go to **Settings → Devices & Services → Samsung FamilyHub**.
+2. Click **Configure**.
+3. Set your **Rotator URL** (e.g. `http://<YOUR_LINUX_SERVER_IP>:8765`, defaulting to `http://127.0.0.1:8765`).
+4. Click **Submit**.
+
+Home Assistant will automatically query the rotator for:
+- Active **SmartThings PAT** (for fridge cameras and door status)
+- Active **KICS Live Food Circles Token** & **Location ID** (for shelf crops & inventory)
+- Active **Samsung Food (Whisk) Token** (for stock photo fallbacks)
+
+---
+
+### 📜 Legacy Method (v1.0.x and earlier)
+*(Kept for users on older integration versions)*
+
+#### 1. Create Helper Entities
+In Home Assistant: **Settings → Devices & Services → Helpers → Create Helper → Text**:
+* **Helper 1 (PAT)**: `input_text.smartthings_pat`
+* **Helper 2 (Food Token)**: `input_text.samsung_food_token`
+
+#### 2. Add REST Sensors to `configuration.yaml`
 ```yaml
 sensor:
   - platform: rest
