@@ -1,6 +1,7 @@
 """Unit tests for Samsung Family Hub Live Food Circles (KICS EPA) integration."""
 
 import json
+import time
 import pytest
 import requests_mock
 from unittest.mock import MagicMock, AsyncMock
@@ -312,5 +313,41 @@ async def test_data_coordinator_direct_rotator_pat_fetch(mock_hass):
         mock_hass.config_entries.async_update_entry.assert_called_with(
             mock_entry, data={"token": "fresh_rotator_pat_999"}
         )
+
+
+@pytest.mark.asyncio
+async def test_data_coordinator_rotator_pat_fetch_throttling(mock_hass):
+    """Test DataCoordinator throttles PAT requests to avoid flooding the rotator server."""
+    from custom_components.samsung_familyhub_fridge.api import DataCoordinator, FamilyHub
+
+    async def _mock_run(func, *args):
+        return func(*args)
+    mock_hass.async_add_executor_job = AsyncMock(side_effect=_mock_run)
+
+    api = FamilyHub(mock_hass, token="current_token", device_id="test_device_id")
+    api.async_ensure_fresh_token = AsyncMock()
+    api.get_all_device_status = MagicMock(return_value={"components": {}})
+    api.set_device_status = MagicMock()
+    api.should_update = False
+    api.get_file_ids = MagicMock(return_value=["file1"])
+    api.download_images = MagicMock(return_value=True)
+
+    coordinator = DataCoordinator(mock_hass, api)
+
+    with requests_mock.Mocker() as m:
+        pat_mock = m.get("http://127.0.0.1:8765/pat", json={"token": "current_token"}, status_code=200)
+
+        # 1. First update queries the rotator
+        await coordinator._async_update_data()
+        assert pat_mock.call_count == 1
+
+        # 2. Immediate second update (e.g. 10s door polling) is throttled and does not query
+        await coordinator._async_update_data()
+        assert pat_mock.call_count == 1
+
+        # 3. Simulate elapsed interval (31 minutes later)
+        coordinator._last_rotator_pat_check = time.time() - 1860
+        await coordinator._async_update_data()
+        assert pat_mock.call_count == 2
 
 

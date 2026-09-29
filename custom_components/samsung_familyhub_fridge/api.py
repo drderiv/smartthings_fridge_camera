@@ -67,6 +67,8 @@ class DataCoordinator(DataUpdateCoordinator):
         self.last_updated_at = None
         self._consecutive_failures = 0
         self._max_consecutive_failures = 10
+        self._last_rotator_pat_check = 0.0
+        self._rotator_pat_check_interval = 1800.0  # Check for rotated PAT at most once every 30 minutes
 
         # State change listener to dynamically reload the integration when the PAT changes.
         # This recovers the integration from ConfigEntryAuthFailed states automatically.
@@ -147,25 +149,28 @@ class DataCoordinator(DataUpdateCoordinator):
         """Fetch data from API endpoint."""
         
         # ── Dynamic Token Refresh & Persistence ────────────────────────────
-        # 1. Directly query companion rotator REST server if reachable
-        rotator_base = self._resolve_rotator_url()
-        try:
-            r = await self._hass.async_add_executor_job(
-                lambda: requests.get(f"{rotator_base}/pat", timeout=2)
-            )
-            if r.ok:
-                pat_tok = r.json().get("token")
-                if pat_tok and pat_tok.strip() and pat_tok.strip() != self.api.token:
-                    _LOGGER.info("Picked up fresh SmartThings PAT directly from rotator (%s/pat)", rotator_base)
-                    self.api.update_token(pat_tok.strip())
-                    entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
-                    for entry in entries:
-                        if entry.data.get("token") != pat_tok.strip():
-                            new_data = {**entry.data, "token": pat_tok.strip()}
-                            self._hass.config_entries.async_update_entry(entry, data=new_data)
-                            _LOGGER.info("Updated config entry on disk with new SmartThings PAT")
-        except Exception:
-            pass
+        now = time.time()
+        # 1. Periodically query companion rotator REST server if reachable (throttled to 30 mins)
+        if (now - self._last_rotator_pat_check >= self._rotator_pat_check_interval) or not self.api.token:
+            self._last_rotator_pat_check = now
+            rotator_base = self._resolve_rotator_url()
+            try:
+                r = await self._hass.async_add_executor_job(
+                    lambda: requests.get(f"{rotator_base}/pat", timeout=2)
+                )
+                if r.ok:
+                    pat_tok = r.json().get("token")
+                    if pat_tok and pat_tok.strip() and pat_tok.strip() != self.api.token:
+                        _LOGGER.info("Picked up fresh SmartThings PAT directly from rotator (%s/pat)", rotator_base)
+                        self.api.update_token(pat_tok.strip())
+                        entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
+                        for entry in entries:
+                            if entry.data.get("token") != pat_tok.strip():
+                                new_data = {**entry.data, "token": pat_tok.strip()}
+                                self._hass.config_entries.async_update_entry(entry, data=new_data)
+                                _LOGGER.info("Updated config entry on disk with new SmartThings PAT")
+            except Exception:
+                pass
 
         # 2. Fallback to helper entity if input_text.smartthings_pat exists
         state = self._hass.states.get(_TOKEN_ENTITY)
@@ -238,6 +243,7 @@ class DataCoordinator(DataUpdateCoordinator):
             self._consecutive_failures = 0
         except AuthenticationError as err:
             # Attempt emergency recovery directly from rotator before failing
+            self._last_rotator_pat_check = time.time()
             rotator_base = self._resolve_rotator_url()
             try:
                 r = await self._hass.async_add_executor_job(
