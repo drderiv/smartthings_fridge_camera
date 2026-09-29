@@ -3,7 +3,7 @@
 A lightweight, standalone background service that automatically manages and serves:
 1. **SmartThings Personal Access Tokens (PATs)**: Rotated every 23 hours via headless browser automation to handle Samsung's 24-hour token expiry limit.
 2. **Samsung Food (Whisk) Tokens**: Rotated every 28 days via headless browser automation using your saved Samsung account session to keep AI food inventory synced.
-3. **KICS Live Food Circles Tokens**: Provisioned and served to extract live circular camera crops cut from inside the fridge.
+3. **KICS Live Food Circles Tokens**: Provisioned and served to extract live circular camera crops cut from inside the fridge. Uses automated Samsung Web SSO token exchange for initial bootstrapping and autonomous 23-hour rolling OAuth refresh—**no Android emulator, rooting, or network sniffing required**.
 
 All tokens and refrigerator location data are served to Home Assistant over local REST endpoints.
 
@@ -14,11 +14,12 @@ All tokens and refrigerator location data are served to Home Assistant over loca
 * **Autonomous Rotation Loops**: 
   - SmartThings PAT rotated every 23 hours.
   - Samsung Food token rotated every 28 days (and verified on startup).
-  - KICS Food Circles token validation and provisioning.
+  - KICS Live Food Circles access token renewed every 23 hours using a 90-day rolling refresh token.
+  - Automatic zero-touch initial KICS token bootstrapping from saved Samsung session.
 * **Local REST Endpoints**:
   - `GET http://<SERVER_IP>:8765/pat` ➔ `{"token": "<PAT>", "status": "ok"}`
   - `GET http://<SERVER_IP>:8765/food_token` ➔ `{"token": "<FOOD_TOKEN>", "status": "ok"}`
-  - `GET http://<SERVER_IP>:8765/kics_token` ➔ `{"token": "<KICS_TOKEN>", "status": "ok"}`
+  - `GET http://<SERVER_IP>:8765/kics_token` ➔ `{"token": "<KICS_TOKEN>", "location_id": "<LOCATION_ID>", "status": "ok"}`
   - `GET http://<SERVER_IP>:8765/location_id` ➔ `{"location_id": "<LOCATION_ID>", "status": "ok"}`
   - `GET http://<SERVER_IP>:8765/tokens` ➔ Combined JSON with all tokens and location details.
   - `GET http://<SERVER_IP>:8765/health` ➔ Service health and token availability status.
@@ -43,7 +44,8 @@ Edit `config.json`:
   "two_factor_method": "device",
   "port": 8765,
   "rotation_interval_hours": 23,
-  "food_rotation_interval_days": 28
+  "food_rotation_interval_days": 28,
+  "kics_rotation_interval_hours": 23
 }
 ```
 
@@ -55,6 +57,7 @@ Edit `config.json`:
 * `port`: HTTP server port (default: `8765`).
 * `rotation_interval_hours`: Frequency to generate a fresh PAT (default: `23` hours).
 * `food_rotation_interval_days`: Frequency to refresh Samsung Food token (default: `28` days).
+* `kics_rotation_interval_hours`: Frequency to refresh KICS Food Circles access token (default: `23` hours).
 
 ### 3. Run
 ```bash

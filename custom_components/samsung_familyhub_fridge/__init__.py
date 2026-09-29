@@ -290,7 +290,8 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
                     "Could not refresh standalone OAuth token on config update: %s",
                     err,
                 )
-    # OAuth mode refreshes its token automatically — nothing to do here.
+    # Reload entry to apply updated options (rotator URL, food sync interval, etc.)
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

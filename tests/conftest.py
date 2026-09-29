@@ -318,10 +318,30 @@ class _ConfigFlowBase:
         return {"type": "abort", "reason": "reauth_successful"}
 
 
+class _OptionsFlowBase:
+    """Stub base class for config_entries.OptionsFlow."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def async_show_form(self, *, step_id, data_schema=None, errors=None, description_placeholders=None):
+        return {
+            "type": "form",
+            "step_id": step_id,
+            "data_schema": data_schema,
+            "errors": errors or {},
+            "description_placeholders": description_placeholders or {},
+        }
+
+    def async_create_entry(self, *, title="", data):
+        return {"type": "create_entry", "title": title, "data": data}
+
+
 ha_config_entries = _make_module(
     "homeassistant.config_entries",
     ConfigEntry=_ConfigEntry,
     ConfigFlow=_ConfigFlowBase,
+    OptionsFlow=_OptionsFlowBase,
     SOURCE_IGNORE="ignore",
 )
 ha_const = _make_module(

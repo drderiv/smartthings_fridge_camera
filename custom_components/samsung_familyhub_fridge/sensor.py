@@ -7,7 +7,16 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, CONF_DEVICE_ID, CONF_FOOD_TOKEN, CONF_KICS_TOKEN, CONF_LOCATION_ID
+from .const import (
+    DOMAIN,
+    CONF_DEVICE_ID,
+    CONF_FOOD_TOKEN,
+    CONF_KICS_TOKEN,
+    CONF_LOCATION_ID,
+    CONF_ROTATOR_URL,
+    CONF_FOOD_UPDATE_INTERVAL,
+    DEFAULT_FOOD_UPDATE_INTERVAL,
+)
 from .api import (
     DataCoordinator,
     SamsungFoodClient,
@@ -31,12 +40,35 @@ async def async_setup_entry(
 
     # Opt-in: Check if Samsung Food (Whisk) or KICS Food Circles token is available
     food_token = config_entry.data.get(CONF_FOOD_TOKEN) or config_entry.data.get(CONF_KICS_TOKEN)
-    location_id = config_entry.data.get(CONF_LOCATION_ID) or getattr(hub, "_location_id", None)
-    food_client = SamsungFoodClient(hass, token=food_token, location_id=location_id)
+    location_id = (
+        config_entry.options.get(CONF_LOCATION_ID)
+        or config_entry.data.get(CONF_LOCATION_ID)
+        or getattr(hub, "_location_id", None)
+    )
+    rotator_url = (
+        config_entry.options.get(CONF_ROTATOR_URL)
+        or config_entry.data.get(CONF_ROTATOR_URL)
+    )
+    food_interval = int(
+        config_entry.options.get(CONF_FOOD_UPDATE_INTERVAL)
+        or config_entry.data.get(CONF_FOOD_UPDATE_INTERVAL)
+        or DEFAULT_FOOD_UPDATE_INTERVAL
+    )
+    food_client = SamsungFoodClient(
+        hass,
+        token=food_token,
+        location_id=location_id,
+        rotator_url=rotator_url,
+        config_entry=config_entry,
+    )
 
     if await food_client.async_has_token():
         _LOGGER.info("Samsung Food token detected. Initializing AI Food Manager inventory sensor.")
-        food_coordinator = SamsungFoodCoordinator(hass, food_client)
+        food_coordinator = SamsungFoodCoordinator(
+            hass,
+            food_client,
+            update_interval_seconds=food_interval,
+        )
         
         # Link food_coordinator to camera DataCoordinator for door-close triggered syncs
         coordinator.food_coordinator = food_coordinator

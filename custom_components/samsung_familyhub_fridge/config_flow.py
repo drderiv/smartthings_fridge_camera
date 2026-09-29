@@ -7,7 +7,7 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_entry_oauth2_flow
@@ -21,14 +21,19 @@ from .const import (
     AUTH_MODE_STANDALONE_OAUTH,
     CONF_AUTH_MODE,
     CONF_DEVICE_ID,
+    CONF_FOOD_UPDATE_INTERVAL,
     CONF_LINKED_SMARTTHINGS_ENTRY_ID,
+    CONF_LOCATION_ID,
     CONF_OAUTH_CLIENT_ID,
     CONF_OAUTH_CLIENT_SECRET,
     CONF_OAUTH_REFRESH_TOKEN,
+    CONF_ROTATOR_URL,
     CONF_SAMSUNG_IOT_AUTH_SERVER,
     CONF_SAMSUNG_IOT_REFRESH_TOKEN,
     CONF_SAMSUNG_SIGNIN_CLIENT_SECRET,
     CONF_TOKEN,
+    DEFAULT_FOOD_UPDATE_INTERVAL,
+    DEFAULT_ROTATOR_URL,
     DOMAIN,
     SMARTTHINGS_DOMAIN,
 )
@@ -109,6 +114,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Samsung FamilyHub Fridge."""
 
     VERSION = 2
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Create the options flow handler."""
+        return SamsungFamilyHubOptionsFlow(config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -487,3 +500,47 @@ class CannotConnect(HomeAssistantError):
 
 class InvalidAuth(HomeAssistantError):
     """Error to indicate there is invalid auth."""
+
+
+class SamsungFamilyHubOptionsFlow(config_entries.OptionsFlow):
+    """Handle options for Samsung FamilyHub Fridge & AI Food Manager."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        rotator_url = (
+            self.config_entry.options.get(CONF_ROTATOR_URL)
+            or self.config_entry.data.get(CONF_ROTATOR_URL)
+            or DEFAULT_ROTATOR_URL
+        )
+        location_id = (
+            self.config_entry.options.get(CONF_LOCATION_ID)
+            or self.config_entry.data.get(CONF_LOCATION_ID)
+            or ""
+        )
+        food_interval = int(
+            self.config_entry.options.get(CONF_FOOD_UPDATE_INTERVAL)
+            or self.config_entry.data.get(CONF_FOOD_UPDATE_INTERVAL)
+            or DEFAULT_FOOD_UPDATE_INTERVAL
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_ROTATOR_URL, default=rotator_url): str,
+                vol.Optional(CONF_LOCATION_ID, default=location_id): str,
+                vol.Optional(CONF_FOOD_UPDATE_INTERVAL, default=food_interval): int,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
+        )

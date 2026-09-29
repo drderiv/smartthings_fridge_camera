@@ -147,27 +147,28 @@ Make sure to select the additional settings as follows and click "Save":
   <img src="assets/config/config-step-8.png" width=1200  alt="config-step-8"/>
 </p>
 
-# 🥗 AI Food Manager Inventory (Samsung Food)
+# 🥗 Live Food Circles & AI Food Manager Inventory
 
-For Samsung Family Hub refrigerators equipped with the internal AI food camera / Food Manager, this integration can expose your active fridge inventory (food names, thumbnails, compartments, expiration dates, and AI recognition suggestions) as a single clean entity:
+For Samsung Family Hub refrigerators equipped with internal food cameras and AI Food Manager, this integration extracts and displays your active fridge inventory—including **live circular camera crops** cut directly from the fridge shelves, food names, compartments, and expiration dates—as a single clean entity:
 
 * **Entity**: `sensor.samsung_fridge_food_inventory`
-* **State**: Count of active items currently inside the fridge (e.g. `33`)
-* **Attributes**: `total_items`, `last_synced`, and `items` (rich list of active items with image thumbnail URLs).
+* **State**: Count of active items currently inside the fridge (e.g. `37`)
+* **Attributes**: `total_items`, `last_synced`, and `items` (rich list of active items with circular crop image URLs, expiration dates, and timestamps).
 
-### Setup (Opt-In):
+### Setup (Opt-In & Zero Emulator):
 
 * **Method 1: Fully Automated Continuous Operation (Recommended)**:
-  Run the companion **Tri-Token Rotator microservice** located in [`tools/pat_rotator/`](tools/pat_rotator/README.md). It runs on any Linux machine or server, automatically rotating your **SmartThings PAT (every 23 hours)**, **Samsung Food Token (every 28 days)**, and **KICS Live Food Circles Token** in the background and serving them to Home Assistant over local REST endpoints with zero downtime.
+  Run the companion **Tri-Token Rotator microservice** located in [`tools/pat_rotator/`](tools/pat_rotator/README.md). It runs on any Linux machine or server, automatically bootstrapping and renewing your:
+  - **SmartThings PAT** (every 23 hours via headless automation)
+  - **Samsung Food Token** (every 28 days)
+  - **KICS Live Food Circles Token** (every 23 hours via OAuth rolling refresh)
+  
+  **No Android emulator, rooting, or packet sniffing is required!** All tokens and refrigerator location data are served to Home Assistant over local REST endpoints.
 
-* **Method 2: One-Time Manual Token Generation**:
-  1. Run the Samsung Food authentication extractor on a machine with a browser (or headless):
-     ```bash
-     python3 scripts/dump_samsung_food.py --config config.json --session smartthings_session.json
-     ```
-  2. Place the generated `samsung_food_token.txt` in your Home Assistant `/config` directory or paste into the `input_text.samsung_food_token` helper entity.
-
-The integration automatically detects the token and registers `sensor.fridge_food_inventory`. If no token is provided, the sensor is omitted so non-AI fridges remain uncluttered.
+* **Home Assistant Configuration & Options Flow**:
+  - If running Home Assistant on a different device or VM from your rotator server, go to **Settings → Devices & Services → Samsung FamilyHub**, click **Configure**, and enter your rotator server URL (e.g. `http://192.168.1.50:8765`).
+  - You can also adjust the Food Circles sync interval (default: 600s / 10 minutes) or override your Refrigerator Location ID.
+  - The integration automatically detects the tokens and registers `sensor.fridge_food_inventory`. If no token is provided, the sensor is omitted so non-AI fridges remain uncluttered.
 
 ---
 

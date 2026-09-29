@@ -34,6 +34,10 @@ from .const import (
     KICS_TOKEN_ENTITY,
     CONF_LOCATION_ID,
     KICS_LOCATION_ENTITY,
+    CONF_ROTATOR_URL,
+    DEFAULT_ROTATOR_URL,
+    ROTATOR_URL_ENTITY,
+    CONF_FOOD_UPDATE_INTERVAL,
 )
 
 if TYPE_CHECKING:
@@ -664,12 +668,49 @@ class FamilyHub:
 class SamsungFoodClient:
     """Client for querying Samsung Food (Whisk) AI Food Manager inventory."""
 
-    def __init__(self, hass: HomeAssistant, token: str | None = None, location_id: str | None = None) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        token: str | None = None,
+        location_id: str | None = None,
+        rotator_url: str | None = None,
+        config_entry: Any = None,
+    ) -> None:
         self.hass = hass
         self._configured_token = token
         self._location_id = location_id
+        self._configured_rotator_url = rotator_url
+        self.config_entry = config_entry
         self._cached_inventory: dict | None = None
         self._session: requests.Session | None = None
+
+    def _resolve_rotator_base_url(self) -> str:
+        """Resolve the base URL of the PAT / KICS rotator microservice."""
+        if self._configured_rotator_url and self._configured_rotator_url.strip():
+            return self._configured_rotator_url.strip().rstrip("/")
+
+        if self.config_entry:
+            opt_url = (
+                self.config_entry.options.get(CONF_ROTATOR_URL)
+                or self.config_entry.data.get(CONF_ROTATOR_URL)
+            )
+            if opt_url and str(opt_url).strip():
+                return str(opt_url).strip().rstrip("/")
+
+        # Check Home Assistant helper input_text.pat_rotator_url
+        try:
+            state = self.hass.states.get(ROTATOR_URL_ENTITY)
+            if state and state.state not in ("unknown", "unavailable", "None", ""):
+                return state.state.strip().rstrip("/")
+        except Exception:
+            pass
+
+        # Check environment variable
+        env_url = os.environ.get("PAT_ROTATOR_URL")
+        if env_url and env_url.strip():
+            return env_url.strip().rstrip("/")
+
+        return DEFAULT_ROTATOR_URL.rstrip("/")
 
     def _load_cached_inventory_from_disk(self) -> None:
         """Attempt to restore cached inventory from disk on startup."""
@@ -692,10 +733,11 @@ class SamsungFoodClient:
 
     def _get_file_token_sync(self) -> str | None:
         """Synchronously check candidate token files on disk or local rotator in executor thread."""
-        # 1. Try local PAT rotator REST server on port 8765 first
+        # 1. Try PAT rotator REST server first
+        rotator_base = self._resolve_rotator_base_url()
         for endpoint in (
-            "http://127.0.0.1:8765/kics_token",
-            "http://127.0.0.1:8765/food_token",
+            f"{rotator_base}/kics_token",
+            f"{rotator_base}/food_token",
         ):
             try:
                 res = requests.get(endpoint, timeout=2)
@@ -766,8 +808,9 @@ class SamsungFoodClient:
     def _get_whisk_stock_map(self, session: requests.Session) -> dict[str, str]:
         """Try to fetch Whisk inventory to map item ID / canonical name to stock photo."""
         whisk_token = None
+        rotator_base = self._resolve_rotator_base_url()
         try:
-            r = session.get("http://127.0.0.1:8765/food_token", timeout=2)
+            r = session.get(f"{rotator_base}/food_token", timeout=2)
             if r.ok:
                 whisk_token = r.json().get("token")
         except Exception:
@@ -826,10 +869,11 @@ class SamsungFoodClient:
             _LOGGER.debug("Could not build Whisk stock photo map: %s", err)
         return stock_map
 
-    def _save_and_return_loc(self, loc: str, helper_state) -> str:
+    def _save_and_return_loc(self, loc: str, helper_state: Any = None) -> str:
         """Store location ID in memory and auto-populate the helper entity if empty."""
         clean_loc = loc.strip()
         self._location_id = clean_loc
+
         if helper_state is not None and helper_state.state in ("unknown", "unavailable", "None", ""):
             try:
                 self.hass.loop.call_soon_threadsafe(
@@ -864,11 +908,12 @@ class SamsungFoodClient:
                 if loc and not loc.startswith("YOUR_"):
                     return self._save_and_return_loc(loc, state)
 
-        # 3. Check rotator microservice REST server (port 8765)
+        # 3. Check rotator microservice REST server
+        rotator_base = self._resolve_rotator_base_url()
         for ep in (
-            "http://127.0.0.1:8765/location_id",
-            "http://127.0.0.1:8765/kics_token",
-            "http://127.0.0.1:8765/tokens",
+            f"{rotator_base}/location_id",
+            f"{rotator_base}/kics_token",
+            f"{rotator_base}/tokens",
         ):
             try:
                 r = requests.get(ep, timeout=2)
@@ -900,7 +945,7 @@ class SamsungFoodClient:
             if hub and hasattr(hub, "token") and hub.token:
                 pat = hub.token
         if not pat:
-            for ep in ("http://127.0.0.1:8765/pat",):
+            for ep in (f"{rotator_base}/pat",):
                 try:
                     r = requests.get(ep, timeout=2)
                     if r.ok:
@@ -1190,12 +1235,17 @@ class SamsungFoodClient:
 class SamsungFoodCoordinator(DataUpdateCoordinator):
     """Coordinator for syncing Samsung Food AI Food Manager inventory."""
 
-    def __init__(self, hass: HomeAssistant, client: SamsungFoodClient) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: SamsungFoodClient,
+        update_interval_seconds: int = DEFAULT_FOOD_UPDATE_INTERVAL,
+    ) -> None:
         super().__init__(
             hass,
             _LOGGER,
             name="Samsung Food Inventory Refresher",
-            update_interval=timedelta(seconds=DEFAULT_FOOD_UPDATE_INTERVAL),
+            update_interval=timedelta(seconds=update_interval_seconds),
         )
         self.client = client
         self._delay_task: asyncio.Task | None = None

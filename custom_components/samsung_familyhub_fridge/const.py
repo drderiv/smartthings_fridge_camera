@@ -44,3 +44,9 @@ KICS_TOKEN_ENTITY = "input_text.kics_food_token"
 CONF_LOCATION_ID = "location_id"
 KICS_LOCATION_ENTITY = "input_text.kics_location_id"
 
+# Rotator microservice & options constants
+CONF_ROTATOR_URL = "rotator_url"
+DEFAULT_ROTATOR_URL = "http://127.0.0.1:8765"
+ROTATOR_URL_ENTITY = "input_text.pat_rotator_url"
+CONF_FOOD_UPDATE_INTERVAL = "food_update_interval"
+

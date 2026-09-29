@@ -71,5 +71,18 @@
                 }
             }
         }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Samsung FamilyHub Options",
+                "description": "Configure companion token rotator endpoints and Food Circles settings.",
+                "data": {
+                    "rotator_url": "PAT / KICS Rotator URL",
+                    "location_id": "Fridge Location ID (optional override)",
+                    "food_update_interval": "Food Circles sync interval in seconds"
+                }
+            }
+        }
     }
 }

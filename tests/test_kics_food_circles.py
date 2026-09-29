@@ -212,3 +212,69 @@ def test_rotate_kics_token_writes_files(tmp_path):
         assert out_file.read_text().strip() == "new_access_token_999"
         assert ref_file.read_text().strip() == "next_rolling_refresh_token_888"
 
+
+def test_resolve_rotator_base_url_hierarchy(mock_hass):
+    """Test resolution order of rotator base URL (options, helper entity, fallback)."""
+    from custom_components.samsung_familyhub_fridge.const import (
+        DEFAULT_ROTATOR_URL,
+        ROTATOR_URL_ENTITY,
+        CONF_ROTATOR_URL,
+    )
+    # 1. Fallback to default
+    client = SamsungFoodClient(mock_hass)
+    assert client._resolve_rotator_base_url() == DEFAULT_ROTATOR_URL
+
+    # 2. Helper entity override
+    mock_helper_state = MagicMock()
+    mock_helper_state.state = "http://192.168.1.150:8765"
+    mock_hass.states.get.side_effect = lambda ent: mock_helper_state if ent == ROTATOR_URL_ENTITY else None
+    assert client._resolve_rotator_base_url() == "http://192.168.1.150:8765"
+
+    # 3. Entry options override
+    mock_entry = MagicMock()
+    mock_entry.options = {CONF_ROTATOR_URL: "http://remote-host:9999/"}
+    mock_entry.data = {}
+    client_with_entry = SamsungFoodClient(mock_hass, config_entry=mock_entry)
+    assert client_with_entry._resolve_rotator_base_url() == "http://remote-host:9999"
+
+
+@pytest.mark.asyncio
+async def test_options_flow_renders_and_saves():
+    """Test SamsungFamilyHubOptionsFlow displays defaults and persists user choices."""
+    from custom_components.samsung_familyhub_fridge.config_flow import (
+        SamsungFamilyHubOptionsFlow,
+    )
+    from custom_components.samsung_familyhub_fridge.const import (
+        CONF_ROTATOR_URL,
+        CONF_LOCATION_ID,
+        CONF_FOOD_UPDATE_INTERVAL,
+        DEFAULT_ROTATOR_URL,
+        DEFAULT_FOOD_UPDATE_INTERVAL,
+    )
+
+    entry = MagicMock()
+    entry.options = {}
+    entry.data = {
+        CONF_ROTATOR_URL: DEFAULT_ROTATOR_URL,
+        CONF_LOCATION_ID: "loc-guid-1234",
+    }
+
+    flow = SamsungFamilyHubOptionsFlow(entry)
+
+    # 1. Test displaying form
+    result = await flow.async_step_init()
+    assert result["type"] == "form"
+    assert result["step_id"] == "init"
+
+    # 2. Test saving options
+    user_input = {
+        CONF_ROTATOR_URL: "http://10.0.0.50:8765",
+        CONF_LOCATION_ID: "loc-guid-custom",
+        CONF_FOOD_UPDATE_INTERVAL: 300,
+    }
+    save_result = await flow.async_step_init(user_input)
+    assert save_result["type"] == "create_entry"
+    assert save_result["data"][CONF_ROTATOR_URL] == "http://10.0.0.50:8765"
+    assert save_result["data"][CONF_LOCATION_ID] == "loc-guid-custom"
+    assert save_result["data"][CONF_FOOD_UPDATE_INTERVAL] == 300
+
