@@ -19,7 +19,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # Import local generators
 from generate_pat import generate_pat, InteractiveAuthRequired
 from generate_food_token import generate_food_token
-from generate_kics_token import rotate_kics_token
+from generate_kics_token import rotate_kics_token, generate_or_validate_kics_token
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
@@ -412,6 +412,21 @@ def kics_rotation_loop(interval_hours: int = 23):
                 has_refresh_token = bool(cfg.get("kics_refresh_token"))
             except Exception:
                 pass
+
+        if not has_refresh_token and os.path.exists(SESSION_FILE):
+            try:
+                _LOGGER.info("No KICS refresh token found, but SmartThings session exists. Attempting automatic Web SSO bootstrap...")
+                generate_or_validate_kics_token(
+                    config_file=CONFIG_FILE,
+                    output_file=KICS_TOKEN_FILE,
+                    refresh_token_file=KICS_REFRESH_TOKEN_FILE,
+                    session_file=SESSION_FILE,
+                    allow_browser_acquisition=True,
+                    headless=True,
+                )
+                has_refresh_token = os.path.exists(KICS_REFRESH_TOKEN_FILE)
+            except Exception as acq_err:
+                _LOGGER.warning("Automatic KICS token acquisition failed: %s", acq_err)
 
         if has_refresh_token:
             try:

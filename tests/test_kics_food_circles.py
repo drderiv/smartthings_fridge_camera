@@ -155,6 +155,14 @@ def test_samsung_food_client_falls_back_to_stock_photo_when_circle_missing(mock_
         assert result["items"][0]["image_url"] == "https://whisk.com/yogurt_stock.jpg"
 
 
+from tools.pat_rotator.generate_kics_token import (
+    validate_kics_token,
+    refresh_kics_token,
+    rotate_kics_token,
+    AUTH_BASE,
+)
+
+
 def test_validate_kics_token_helper():
     """Test standalone validate_kics_token helper."""
     with requests_mock.Mocker() as m:
@@ -164,4 +172,43 @@ def test_validate_kics_token_helper():
     with requests_mock.Mocker() as m:
         m.get(KICS_FOODLIST_ENDPOINT, status_code=401)
         assert validate_kics_token("invalid_token", "loc-123") is False
+
+
+def test_refresh_kics_token_success():
+    """Test refresh_kics_token exchanges a refresh token for a fresh access token."""
+    mock_token_resp = {
+        "access_token": "fresh_access_token_xyz123",
+        "expires_in": 86400,
+        "refresh_token": "fresh_refresh_token_uvw456",
+        "refresh_token_expires_in": 7776000,
+        "token_type": "Bearer",
+    }
+    with requests_mock.Mocker() as m:
+        m.post(f"{AUTH_BASE}/auth/oauth2/token", json=mock_token_resp, status_code=200)
+        payload = refresh_kics_token("old_refresh_token_abc")
+        assert payload["access_token"] == "fresh_access_token_xyz123"
+        assert payload["refresh_token"] == "fresh_refresh_token_uvw456"
+
+
+def test_rotate_kics_token_writes_files(tmp_path):
+    """Test rotate_kics_token saves new access and rolling refresh tokens to disk."""
+    ref_file = tmp_path / "kics_refresh_token.txt"
+    out_file = tmp_path / "kics_food_token.txt"
+    ref_file.write_text("initial_rolling_refresh_token\n")
+
+    mock_token_resp = {
+        "access_token": "new_access_token_999",
+        "expires_in": 86400,
+        "refresh_token": "next_rolling_refresh_token_888",
+    }
+
+    with requests_mock.Mocker() as m:
+        m.post(f"{AUTH_BASE}/auth/oauth2/token", json=mock_token_resp, status_code=200)
+        acc = rotate_kics_token(
+            refresh_token_file=str(ref_file),
+            output_file=str(out_file),
+        )
+        assert acc == "new_access_token_999"
+        assert out_file.read_text().strip() == "new_access_token_999"
+        assert ref_file.read_text().strip() == "next_rolling_refresh_token_888"
 
