@@ -7,12 +7,15 @@ Runs the local HTTP REST server on port 8765 and automatically triggers:
 Includes built-in file logging and automated weekly log pruning.
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import time
 import json
 import logging
 import threading
+from typing import Any
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
