@@ -169,6 +169,7 @@ For Samsung Family Hub refrigerators equipped with internal food cameras and AI 
   - If running Home Assistant on a different device or VM from your rotator server, go to **Settings → Devices & Services → Samsung FamilyHub**, click **Configure**, and enter your rotator server URL (e.g. `http://192.168.1.50:8765`).
   - You can also adjust the Food Circles sync interval (default: 600s / 10 minutes) or override your Refrigerator Location ID.
   - The integration automatically detects the tokens and registers `sensor.fridge_food_inventory`. If no token is provided, the sensor is omitted so non-AI fridges remain uncluttered.
+  - **Zero YAML & Zero Routine Polling**: Home Assistant queries the rotator once at startup via `GET /tokens` and caches tokens in memory until their scheduled renewal time (`next_rotation_at`), eliminating continuous polling and network overhead.
 
 ---
 

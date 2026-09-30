@@ -14,7 +14,7 @@ This document details the major functional enhancements, architectural upgrades,
 | **Persistence & Cloud Fault Tolerance** | ❌ Memory wiped on reboot; no cloud retry | ✅ **Persistent On-Disk Cache (`inventory.json`)** across Home Assistant reboots + 3-attempt exponential backoff retry on cloud gateway timeouts (502/503/504) |
 | **Inventory Sync Trigger** | ❌ None | ✅ **Automatic door-close triggered sync** with cloud vision commit delay (~12s) + periodic polling |
 | **Token Lifetime & Rotation** | ⚠️ Expired after 24h (PAT), requiring manual recreation | ✅ **Autonomous Multi-Token Rotator microservice**: Headless renewal of SmartThings PAT (every 23h) and Samsung Food / KICS tokens with local REST server and zero downtime |
-| **Dynamic Token Reload** | ❌ Required manual re-auth / integration restart | ✅ **Dynamic listeners** on helper entities (`input_text.smartthings_pat`, `input_text.samsung_food_token`, `input_text.kics_food_token`) and automated Location ID discovery |
+| **Token Synchronization & Caching** | ❌ Required manual re-auth / integration restart | ✅ **Native Options Flow (`rotator_url`) + Startup Priming & In-Memory TTL Caching**: Single startup query, zero routine rotator polling, and optional legacy helper listeners |
 | **Async Architecture** | ⚠️ Synchronous file I/O in event loop | ✅ **100% Non-Blocking**: All file operations, image caching, and network calls offloaded to worker threads via `hass.async_add_executor_job()` |
 | **Authentication Options** | ⚠️ PAT only | ✅ **Multi-Mode Authentication**: Home Assistant Core OAuth2 reuse, Standalone Developer OAuth2, or automated PAT rotation |
 | **Dashboard UI** | 📷 Basic camera entity cards | 🥗 **Production 2-Column Template**: Food inventory table with full-photo click-to-zoom (`target="_blank"`, `🔎`), zero row distortion, and 5:6 aspect-ratio stacked door cameras |
@@ -93,13 +93,18 @@ To achieve continuous, 100% autonomous operation without human intervention or t
 
 ---
 
-## ⚡ 5. Dynamic Zero-Restart Token Synchronization & Non-Blocking Async
+## ⚡ 5. Native Options Flow, Startup Token Priming & Intelligent TTL Caching
 
-* **Dynamic State Listeners**:
-  * Implemented in [`custom_components/samsung_familyhub_fridge/api.py`](custom_components/samsung_familyhub_fridge/api.py): Listens for state changes on `input_text.smartthings_pat`, `input_text.samsung_food_token`, and `input_text.kics_food_token`.
-  * When a new token is fetched by Home Assistant REST sensors, the integration updates the config entry on disk and reloads the API client dynamically without requiring Home Assistant reboots.
+* **Native Options Flow ("Configure" Button)**:
+  * Users can configure their companion rotator server URL, Refrigerator Location ID, and Food Circles update intervals directly from the Home Assistant UI (**Settings → Devices & Services → Samsung FamilyHub → Configure**). Zero YAML configuration or automations required.
+* **Single Startup Priming (`GET /tokens`)**:
+  * On integration setup, Home Assistant fetches all tokens and location details in a single prime request to `/tokens`, initializing the camera coordinator and food client simultaneously.
+* **Intelligent In-Memory TTL Caching (Zero Routine Polling)**:
+  * Tokens are cached in-memory with precise rotation schedules (`next_rotation_at`, `ttl_seconds`) provided by the rotator. Routine 10-second camera polling and 10-15 minute food inventory refreshes never hit the rotator service. Fresh tokens are only requested when the scheduled rotation time arrives or upon receiving an HTTP 401/403 authentication error.
+* **Legacy Helper Compatibility**:
+  * For setups retaining v1.0.x REST sensors, dynamic state listeners on `input_text.smartthings_pat`, `input_text.samsung_food_token`, and `input_text.kics_food_token` remain fully functional as fallback options.
 * **100% Non-Blocking Event Loop**:
-  * All file I/O, cache loading, image downloads, and HTTP requests are offloaded to Home Assistant's thread pool executor via `hass.async_add_executor_job()`, eliminating `Detected blocking call inside event loop` warnings.
+  * All file I/O, cache loading, image downloads, and network calls are offloaded to Home Assistant's thread pool executor via `hass.async_add_executor_job()`, eliminating `Detected blocking call inside event loop` warnings.
 
 ---
 

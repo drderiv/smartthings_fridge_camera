@@ -17,11 +17,11 @@ All tokens and refrigerator location data are served to Home Assistant over loca
   - KICS Live Food Circles access token renewed every 23 hours using a 90-day rolling refresh token.
   - Automatic zero-touch initial KICS token bootstrapping from saved Samsung session.
 * **Local REST Endpoints**:
-  - `GET http://<SERVER_IP>:8765/pat` ➔ `{"token": "<PAT>", "status": "ok"}`
-  - `GET http://<SERVER_IP>:8765/food_token` ➔ `{"token": "<FOOD_TOKEN>", "status": "ok"}`
-  - `GET http://<SERVER_IP>:8765/kics_token` ➔ `{"token": "<KICS_TOKEN>", "location_id": "<LOCATION_ID>", "status": "ok"}`
+  - `GET http://<SERVER_IP>:8765/pat` ➔ Active PAT with rotation schedule (`token`, `generated_at`, `next_rotation_at`, `ttl_seconds`).
+  - `GET http://<SERVER_IP>:8765/food_token` ➔ Active Samsung Food (Whisk) Token with schedule metadata.
+  - `GET http://<SERVER_IP>:8765/kics_token` ➔ Active KICS Food Circles Token, `location_id`, and schedule metadata.
   - `GET http://<SERVER_IP>:8765/location_id` ➔ `{"location_id": "<LOCATION_ID>", "status": "ok"}`
-  - `GET http://<SERVER_IP>:8765/tokens` ➔ Combined JSON with all tokens and location details.
+  - `GET http://<SERVER_IP>:8765/tokens` ➔ Combined JSON with all active tokens, location details, and rotation metadata.
   - `GET http://<SERVER_IP>:8765/health` ➔ Service health and token availability status.
 * **Automated Log Maintenance**: Writes directly to `rotator.log` and automatically trims it every Sunday at midnight to keep only the most recent 100 lines.
 
@@ -128,6 +128,13 @@ Home Assistant will automatically query the rotator for:
 - Active **SmartThings PAT** (for fridge cameras and door status)
 - Active **KICS Live Food Circles Token** & **Location ID** (for shelf crops & inventory)
 - Active **Samsung Food (Whisk) Token** (for stock photo fallbacks)
+
+#### 🚀 Intelligent Startup Priming & Zero Routine Polling
+* **Single Startup Sync**: On Home Assistant startup, the integration queries `GET /tokens` once to fetch all active tokens and their scheduled rotation timestamps (`next_rotation_at`).
+* **Zero Routine Polling**: Tokens are cached in-memory with precise TTL expiration. Routine 10-second camera refreshes and 10-15 minute food inventory syncs run 100% locally against Samsung APIs without querying the rotator microservice.
+* **Proactive & Reactive Renewal**: Home Assistant only queries the rotator when a token reaches its scheduled rotation time or if Samsung returns an authentication error (HTTP 401/403).
+
+> **Upgrading from v1.0.x?** You can safely remove the legacy REST sensors from `configuration.yaml`, remove the sync automations from `automations.yaml`, and delete the `input_text` helper entities. All token synchronization is now handled automatically via the native Options Flow.
 
 ---
 
