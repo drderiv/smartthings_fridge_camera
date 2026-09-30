@@ -151,15 +151,32 @@ class PATHandler(BaseHTTPRequestHandler):
                 _LOGGER.debug("Error reading location_id from %s: %s", CONFIG_FILE, err)
         return None
 
+    def _get_token_metadata(self, filepath: str, rotation_interval_seconds: float) -> dict[str, Any]:
+        """Compute generation time and scheduled next rotation timestamp for a token file."""
+        if not os.path.exists(filepath):
+            return {}
+        try:
+            mtime = os.path.getmtime(filepath)
+            next_rot = mtime + rotation_interval_seconds
+            ttl = max(0.0, next_rot - time.time())
+            return {
+                "generated_at": int(mtime),
+                "next_rotation_at": int(next_rot),
+                "ttl_seconds": int(ttl),
+            }
+        except Exception:
+            return {}
+
     def do_GET(self):
         # 1. SmartThings PAT endpoint
         if self.path in ("/pat", "/pat/"):
             token = self._read_file_token(TOKEN_FILE)
             if token:
+                meta = self._get_token_metadata(TOKEN_FILE, 23 * 3600)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                response = {"token": token, "status": "ok", "type": "smartthings_pat"}
+                response = {"token": token, "status": "ok", "type": "smartthings_pat", **meta}
                 self.wfile.write(json.dumps(response).encode("utf-8"))
                 _LOGGER.info("Served SmartThings PAT to client %s", self.client_address[0])
             else:
@@ -175,10 +192,11 @@ class PATHandler(BaseHTTPRequestHandler):
             token = self._read_file_token(FOOD_TOKEN_FILE) or self._read_file_token(KICS_TOKEN_FILE) or self._read_file_token(ACTIVE_BEARER_FILE)
             loc = self._read_location_id()
             if token:
+                meta = self._get_token_metadata(FOOD_TOKEN_FILE, 28 * 86400)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                response = {"token": token, "location_id": loc, "status": "ok", "type": "samsung_food_token"}
+                response = {"token": token, "location_id": loc, "status": "ok", "type": "samsung_food_token", **meta}
                 self.wfile.write(json.dumps(response).encode("utf-8"))
                 _LOGGER.info("Served Samsung Food (Whisk) token to client %s", self.client_address[0])
             else:
@@ -191,13 +209,15 @@ class PATHandler(BaseHTTPRequestHandler):
 
         # 3. Samsung Family Hub Live Food Circles (KICS EPA) Token endpoint
         elif self.path in ("/kics_token", "/kics_token/", "/food_circles_token", "/food_circles_token/"):
-            token = self._read_file_token(KICS_TOKEN_FILE) or self._read_file_token(ACTIVE_BEARER_FILE)
+            target_file = KICS_TOKEN_FILE if os.path.exists(KICS_TOKEN_FILE) else ACTIVE_BEARER_FILE
+            token = self._read_file_token(target_file)
             loc = self._read_location_id()
             if token:
+                meta = self._get_token_metadata(target_file, 23 * 3600)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                response = {"token": token, "location_id": loc, "status": "ok", "type": "samsung_kics_food_token"}
+                response = {"token": token, "location_id": loc, "status": "ok", "type": "samsung_kics_food_token", **meta}
                 self.wfile.write(json.dumps(response).encode("utf-8"))
                 _LOGGER.info("Served KICS Food Circles token to client %s", self.client_address[0])
             else:
@@ -229,8 +249,12 @@ class PATHandler(BaseHTTPRequestHandler):
         elif self.path in ("/tokens", "/tokens/"):
             pat = self._read_file_token(TOKEN_FILE)
             food_token = self._read_file_token(FOOD_TOKEN_FILE)
-            kics_token = self._read_file_token(KICS_TOKEN_FILE) or self._read_file_token(ACTIVE_BEARER_FILE)
+            kics_file = KICS_TOKEN_FILE if os.path.exists(KICS_TOKEN_FILE) else ACTIVE_BEARER_FILE
+            kics_token = self._read_file_token(kics_file)
             loc = self._read_location_id()
+            pat_meta = self._get_token_metadata(TOKEN_FILE, 23 * 3600)
+            kics_meta = self._get_token_metadata(kics_file, 23 * 3600)
+            food_meta = self._get_token_metadata(FOOD_TOKEN_FILE, 28 * 86400)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -243,6 +267,9 @@ class PATHandler(BaseHTTPRequestHandler):
                 "pat": pat,
                 "food_token": food_token,
                 "status": "ok" if (pat or food_token or kics_token) else "empty",
+                "pat_next_rotation_at": pat_meta.get("next_rotation_at"),
+                "kics_next_rotation_at": kics_meta.get("next_rotation_at"),
+                "food_next_rotation_at": food_meta.get("next_rotation_at"),
             }
             self.wfile.write(json.dumps(response).encode("utf-8"))
             _LOGGER.info("Served combined tokens to client %s", self.client_address[0])

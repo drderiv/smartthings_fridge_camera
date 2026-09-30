@@ -345,9 +345,44 @@ async def test_data_coordinator_rotator_pat_fetch_throttling(mock_hass):
         await coordinator._async_update_data()
         assert pat_mock.call_count == 1
 
-        # 3. Simulate elapsed interval (31 minutes later)
-        coordinator._last_rotator_pat_check = time.time() - 1860
+        # 3. Simulate elapsed validity window / scheduled rotation reached
+        coordinator._pat_expires_at = time.time() - 10
         await coordinator._async_update_data()
         assert pat_mock.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_samsung_food_client_token_caching_and_ttl(mock_hass):
+    """Test SamsungFoodClient caches KICS token and respects next_rotation_at TTL."""
+    async def _mock_run(func, *args):
+        return func(*args)
+    mock_hass.async_add_executor_job = AsyncMock(side_effect=_mock_run)
+
+    client = SamsungFoodClient(mock_hass, rotator_url="http://127.0.0.1:8765")
+
+    with requests_mock.Mocker() as m:
+        future_ts = int(time.time() + 82800)
+        kics_mock = m.get(
+            "http://127.0.0.1:8765/kics_token",
+            json={"token": "kics_tok_abc", "next_rotation_at": future_ts},
+            status_code=200,
+        )
+
+        # 1. First retrieval fetches from rotator and sets expiration
+        tok1 = await client.async_get_token()
+        assert tok1 == "kics_tok_abc"
+        assert kics_mock.call_count == 1
+        assert client._kics_expires_at == float(future_ts)
+
+        # 2. Subsequent call uses cached token directly without HTTP request
+        tok2 = await client.async_get_token()
+        assert tok2 == "kics_tok_abc"
+        assert kics_mock.call_count == 1
+
+        # 3. After expiration, queries rotator again
+        client._kics_expires_at = time.time() - 10
+        tok3 = await client.async_get_token()
+        assert tok3 == "kics_tok_abc"
+        assert kics_mock.call_count == 2
 
 

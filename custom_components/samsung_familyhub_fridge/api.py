@@ -67,8 +67,7 @@ class DataCoordinator(DataUpdateCoordinator):
         self.last_updated_at = None
         self._consecutive_failures = 0
         self._max_consecutive_failures = 10
-        self._last_rotator_pat_check = 0.0
-        self._rotator_pat_check_interval = 1800.0  # Check for rotated PAT at most once every 30 minutes
+        self._pat_expires_at = 0.0
 
         # State change listener to dynamically reload the integration when the PAT changes.
         # This recovers the integration from ConfigEntryAuthFailed states automatically.
@@ -150,16 +149,18 @@ class DataCoordinator(DataUpdateCoordinator):
         
         # ── Dynamic Token Refresh & Persistence ────────────────────────────
         now = time.time()
-        # 1. Periodically query companion rotator REST server if reachable (throttled to 30 mins)
-        if (now - self._last_rotator_pat_check >= self._rotator_pat_check_interval) or not self.api.token:
-            self._last_rotator_pat_check = now
+        # Query companion rotator REST server only when PAT is missing, uninitialized, or has reached scheduled rotation
+        if not self.api.token or not self._pat_expires_at or now >= self._pat_expires_at:
             rotator_base = self._resolve_rotator_url()
             try:
                 r = await self._hass.async_add_executor_job(
                     lambda: requests.get(f"{rotator_base}/pat", timeout=2)
                 )
                 if r.ok:
-                    pat_tok = r.json().get("token")
+                    data = r.json()
+                    pat_tok = data.get("token")
+                    next_rot = data.get("next_rotation_at")
+                    self._pat_expires_at = float(next_rot) if next_rot else (now + (22 * 3600))
                     if pat_tok and pat_tok.strip() and pat_tok.strip() != self.api.token:
                         _LOGGER.info("Picked up fresh SmartThings PAT directly from rotator (%s/pat)", rotator_base)
                         self.api.update_token(pat_tok.strip())
@@ -170,7 +171,8 @@ class DataCoordinator(DataUpdateCoordinator):
                                 self._hass.config_entries.async_update_entry(entry, data=new_data)
                                 _LOGGER.info("Updated config entry on disk with new SmartThings PAT")
             except Exception:
-                pass
+                # If network fails, retry in 5 minutes
+                self._pat_expires_at = now + 300
 
         # 2. Fallback to helper entity if input_text.smartthings_pat exists
         state = self._hass.states.get(_TOKEN_ENTITY)
@@ -242,15 +244,18 @@ class DataCoordinator(DataUpdateCoordinator):
             # Reset failure count on success
             self._consecutive_failures = 0
         except AuthenticationError as err:
-            # Attempt emergency recovery directly from rotator before failing
-            self._last_rotator_pat_check = time.time()
+            # Force immediate recovery from rotator
+            self._pat_expires_at = 0.0
             rotator_base = self._resolve_rotator_url()
             try:
                 r = await self._hass.async_add_executor_job(
                     lambda: requests.get(f"{rotator_base}/pat", timeout=2)
                 )
                 if r.ok:
-                    pat_tok = r.json().get("token")
+                    data = r.json()
+                    pat_tok = data.get("token")
+                    next_rot = data.get("next_rotation_at")
+                    self._pat_expires_at = float(next_rot) if next_rot else (time.time() + (22 * 3600))
                     if pat_tok and pat_tok.strip() and pat_tok.strip() != self.api.token:
                         _LOGGER.info("Recovered from auth error with fresh PAT from rotator (%s/pat)", rotator_base)
                         self.api.update_token(pat_tok.strip())
@@ -334,6 +339,7 @@ class FamilyHub:
         self._samsung_iot_refresh_token: str | None = None
         self._samsung_iot_auth_server: str = "https://us-auth2.samsungosp.com"
         self._entry = None
+        self.startup_rotator_data: dict[str, Any] = {}
 
     def set_samsung_iot_token(
         self,
@@ -743,6 +749,10 @@ class SamsungFoodClient:
         self.config_entry = config_entry
         self._cached_inventory: dict | None = None
         self._session: requests.Session | None = None
+        self._cached_kics_token: str | None = None
+        self._kics_expires_at: float = 0.0
+        self._cached_whisk_token: str | None = None
+        self._whisk_expires_at: float = 0.0
 
     def _resolve_rotator_base_url(self) -> str:
         """Resolve the base URL of the PAT / KICS rotator microservice."""
@@ -793,6 +803,10 @@ class SamsungFoodClient:
 
     def _get_file_token_sync(self) -> str | None:
         """Synchronously check candidate token files on disk or local rotator in executor thread."""
+        now = time.time()
+        if self._cached_kics_token and (not self._kics_expires_at or now < self._kics_expires_at):
+            return self._cached_kics_token
+
         # 1. Try PAT rotator REST server first
         rotator_base = self._resolve_rotator_base_url()
         for endpoint in (
@@ -802,9 +816,13 @@ class SamsungFoodClient:
             try:
                 res = requests.get(endpoint, timeout=2)
                 if res.ok:
-                    tok = res.json().get("token")
+                    data = res.json()
+                    tok = data.get("token")
+                    next_rot = data.get("next_rotation_at")
                     if tok and tok.strip():
                         _LOGGER.info("SamsungFoodClient: Loaded active token from local rotator (%s)", endpoint)
+                        self._cached_kics_token = tok.strip()
+                        self._kics_expires_at = float(next_rot) if next_rot else (now + (22 * 3600))
                         return tok.strip()
             except Exception:
                 pass
@@ -840,6 +858,8 @@ class SamsungFoodClient:
                         tok = f.read().strip()
                         if tok:
                             _LOGGER.info("SamsungFoodClient: Loaded token from %s", p)
+                            self._cached_kics_token = tok
+                            self._kics_expires_at = now + (22 * 3600)
                             return tok
             except Exception as err:
                 _LOGGER.debug("Could not read candidate token file %s: %s", p, err)
@@ -851,6 +871,10 @@ class SamsungFoodClient:
         if self._configured_token and self._configured_token.strip():
             return self._configured_token.strip()
 
+        now = time.time()
+        if self._cached_kics_token and (not self._kics_expires_at or now < self._kics_expires_at):
+            return self._cached_kics_token
+
         # Check helper entities (KICS token helper prioritized, then Samsung Food helper)
         for entity_id in (KICS_TOKEN_ENTITY, FOOD_TOKEN_ENTITY):
             state = self.hass.states.get(entity_id)
@@ -858,7 +882,12 @@ class SamsungFoodClient:
                 return state.state.strip()
 
         # Check file locations in executor thread
-        return await self.hass.async_add_executor_job(self._get_file_token_sync)
+        tok = await self.hass.async_add_executor_job(self._get_file_token_sync)
+        if tok:
+            self._cached_kics_token = tok
+            if not self._kics_expires_at or now >= self._kics_expires_at:
+                self._kics_expires_at = now + (22 * 3600)
+        return tok
 
     async def async_has_token(self) -> bool:
         """Check if a valid token is available without blocking."""
@@ -867,14 +896,24 @@ class SamsungFoodClient:
 
     def _get_whisk_stock_map(self, session: requests.Session) -> dict[str, str]:
         """Try to fetch Whisk inventory to map item ID / canonical name to stock photo."""
+        now = time.time()
         whisk_token = None
-        rotator_base = self._resolve_rotator_base_url()
-        try:
-            r = session.get(f"{rotator_base}/food_token", timeout=2)
-            if r.ok:
-                whisk_token = r.json().get("token")
-        except Exception:
-            pass
+        if self._cached_whisk_token and (not self._whisk_expires_at or now < self._whisk_expires_at):
+            whisk_token = self._cached_whisk_token
+        else:
+            rotator_base = self._resolve_rotator_base_url()
+            try:
+                r = session.get(f"{rotator_base}/food_token", timeout=2)
+                if r.ok:
+                    data = r.json()
+                    tok = data.get("token")
+                    next_rot = data.get("next_rotation_at")
+                    if tok and tok.strip():
+                        whisk_token = tok.strip()
+                        self._cached_whisk_token = whisk_token
+                        self._whisk_expires_at = float(next_rot) if next_rot else (now + (27 * 86400))
+            except Exception:
+                pass
 
         if not whisk_token:
             for p in [
@@ -1175,7 +1214,11 @@ class SamsungFoodClient:
                     return result
                 else:
                     kics_error_msg = f"HTTP {r.status_code} - {r.text[:200]}"
-                    if r.status_code in (502, 503, 504, 524) and attempt < 3:
+                    if r.status_code in (401, 403):
+                        _LOGGER.warning("KICS token was rejected (%d). Clearing cached token.", r.status_code)
+                        self._cached_kics_token = None
+                        self._kics_expires_at = 0.0
+                    elif r.status_code in (502, 503, 504, 524) and attempt < 3:
                         _LOGGER.info("KICS EPA returned HTTP %d on attempt %d. Retrying in 3s...", r.status_code, attempt)
                         time.sleep(3)
                         continue

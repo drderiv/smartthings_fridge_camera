@@ -78,19 +78,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             or entry.data.get(CONF_ROTATOR_URL)
             or DEFAULT_ROTATOR_URL
         )
+        startup_rotator_data: dict[str, Any] = {}
         if rotator_url:
             try:
                 import requests
+                # 1. Try combined /tokens endpoint first
                 r = await hass.async_add_executor_job(
-                    lambda: requests.get(f"{rotator_url.rstrip('/')}/pat", timeout=2)
+                    lambda: requests.get(f"{rotator_url.rstrip('/')}/tokens", timeout=2)
                 )
                 if r.ok:
-                    fresh_pat = r.json().get("token")
+                    startup_rotator_data = r.json()
+                    fresh_pat = (
+                        startup_rotator_data.get("smartthings_pat")
+                        or startup_rotator_data.get("pat")
+                        or startup_rotator_data.get("token")
+                    )
                     if fresh_pat and fresh_pat.strip():
                         token = fresh_pat.strip()
-                        _LOGGER.info("Loaded fresh SmartThings PAT from rotator on startup")
-            except Exception:
-                pass
+                        _LOGGER.info("Loaded active tokens from rotator combined endpoint on startup")
+                if not token or not startup_rotator_data:
+                    # Fallback to /pat endpoint
+                    r_pat = await hass.async_add_executor_job(
+                        lambda: requests.get(f"{rotator_url.rstrip('/')}/pat", timeout=2)
+                    )
+                    if r_pat.ok:
+                        data = r_pat.json()
+                        fresh_pat = data.get("token")
+                        if fresh_pat and fresh_pat.strip():
+                            token = fresh_pat.strip()
+                            startup_rotator_data = data
+                            _LOGGER.info("Loaded fresh SmartThings PAT from rotator on startup")
+            except Exception as rot_err:
+                _LOGGER.debug("Could not reach rotator on startup: %s", rot_err)
 
         if not token:
             raise ConfigEntryNotReady(
@@ -98,6 +117,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "integration in Settings → Devices & Services."
             )
         hub = FamilyHub(hass, token=token, device_id=device_id)
+        hub.startup_rotator_data = startup_rotator_data
+        if token and entry.data.get(CONF_TOKEN) != token:
+            hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_TOKEN: token})
 
     hass.data[DOMAIN][entry.entry_id] = entry
     hass.data[DOMAIN]["hub"] = hub

@@ -36,6 +36,12 @@ async def async_setup_entry(
     coordinator = DataCoordinator(hass, hub)
     entities: list[SensorEntity] = [LastUpdatedAt(coordinator)]
 
+    startup_data = getattr(hub, "startup_rotator_data", {})
+    if startup_data:
+        pat_next = startup_data.get("pat_next_rotation_at") or startup_data.get("next_rotation_at")
+        if pat_next:
+            coordinator._pat_expires_at = float(pat_next)
+
     device_id = config_entry.data.get(CONF_DEVICE_ID) or "samsung_familyhub"
 
     # Opt-in: Check if Samsung Food (Whisk) or KICS Food Circles token is available
@@ -61,6 +67,28 @@ async def async_setup_entry(
         rotator_url=rotator_url,
         config_entry=config_entry,
     )
+
+    if startup_data:
+        import time
+        kics_tok = startup_data.get("kics_token") or startup_data.get("kics_food_token")
+        if kics_tok and str(kics_tok).strip():
+            food_client._cached_kics_token = str(kics_tok).strip()
+            kics_next = startup_data.get("kics_next_rotation_at")
+            if kics_next:
+                food_client._kics_expires_at = float(kics_next)
+            else:
+                food_client._kics_expires_at = time.time() + (22 * 3600)
+        whisk_tok = startup_data.get("samsung_food_token") or startup_data.get("food_token")
+        if whisk_tok and str(whisk_tok).strip():
+            food_client._cached_whisk_token = str(whisk_tok).strip()
+            whisk_next = startup_data.get("food_next_rotation_at")
+            if whisk_next:
+                food_client._whisk_expires_at = float(whisk_next)
+            else:
+                food_client._whisk_expires_at = time.time() + (27 * 86400)
+        loc = startup_data.get("location_id")
+        if loc and str(loc).strip() and not str(loc).startswith("YOUR_") and not food_client._location_id:
+            food_client._location_id = str(loc).strip()
 
     if await food_client.async_has_token():
         _LOGGER.info("Samsung Food token detected. Initializing AI Food Manager inventory sensor.")
