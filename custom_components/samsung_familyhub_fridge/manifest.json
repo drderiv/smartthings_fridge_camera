@@ -15,8 +15,6 @@
   "integration_type": "hub",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/drderiv/smartthings_fridge_camera/issues",
-  "requirements": [
-    "requests>=2.28.0"
-  ],
+  "requirements": [],
   "version": "1.1.0"
 }
