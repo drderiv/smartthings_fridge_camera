@@ -80,7 +80,8 @@
                 "data": {
                     "rotator_url": "PAT / KICS Rotator URL",
                     "location_id": "Fridge Location ID (optional override)",
-                    "food_update_interval": "Food Circles sync interval in seconds"
+                    "food_update_interval": "Food Circles sync interval in seconds",
+                    "enable_bottom_camera": "Enable Bottom Camera (for 3-camera fridge models)"
                 }
             }
         }

@@ -49,4 +49,6 @@ CONF_ROTATOR_URL = "rotator_url"
 DEFAULT_ROTATOR_URL = "http://127.0.0.1:8765"
 ROTATOR_URL_ENTITY = "input_text.pat_rotator_url"
 CONF_FOOD_UPDATE_INTERVAL = "food_update_interval"
+CONF_ENABLE_BOTTOM_CAMERA = "enable_bottom_camera"
+DEFAULT_ENABLE_BOTTOM_CAMERA = False
 

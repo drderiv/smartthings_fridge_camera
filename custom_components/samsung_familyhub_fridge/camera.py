@@ -3,7 +3,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, CONF_DEVICE_ID
+from .const import (
+    DOMAIN,
+    CONF_DEVICE_ID,
+    CONF_ENABLE_BOTTOM_CAMERA,
+    DEFAULT_ENABLE_BOTTOM_CAMERA,
+)
 from .api import FamilyHub
 
 
@@ -19,13 +24,22 @@ async def async_setup_entry(
         or getattr(hub, "device_id", None)
         or "samsung_familyhub"
     )
-    async_add_entities(
-        [
-            FamilyHubCamera("family_hub_top", 0, hub, device_id),
-            FamilyHubCamera("family_hub_middle", 1, hub, device_id),
-            FamilyHubCamera("family_hub_bottom", 2, hub, device_id),
-        ]
+    enable_bottom = bool(
+        config_entry.options.get(CONF_ENABLE_BOTTOM_CAMERA)
+        if CONF_ENABLE_BOTTOM_CAMERA in config_entry.options
+        else config_entry.data.get(CONF_ENABLE_BOTTOM_CAMERA, DEFAULT_ENABLE_BOTTOM_CAMERA)
     )
+
+    cameras = [
+        FamilyHubCamera("family_hub_top", 0, hub, device_id),
+        FamilyHubCamera("family_hub_middle", 1, hub, device_id),
+    ]
+
+    # Only create the bottom camera entity if explicitly enabled (e.g. for older 3-camera models)
+    if enable_bottom:
+        cameras.append(FamilyHubCamera("family_hub_bottom", 2, hub, device_id))
+
+    async_add_entities(cameras)
 
 
 class FamilyHubCamera(Camera):
