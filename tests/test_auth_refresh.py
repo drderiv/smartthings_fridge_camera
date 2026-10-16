@@ -379,3 +379,75 @@ class TestFullAuthRefreshScenario:
         with rm.Mocker() as m:
             m.get(CURRENT_STATUS_URL, json=normal_status)
             await coordinator._async_update_data()  # no exception
+
+
+# ---------------------------------------------------------------------------
+# 6. Status Error Handling & Coordinator Deadlock Prevention
+# ---------------------------------------------------------------------------
+
+class TestStatusErrorHandlingAndCoordinatorResilience:
+    """Verify error responses do not corrupt status or deadlock coordinator."""
+
+    def test_set_current_device_status_ignores_error_body(self, hub):
+        valid_status = {
+            "samsungce.viewInside": {
+                "contents": {"value": [{"fileId": "valid_id"}]}
+            }
+        }
+        hub.set_current_device_status(valid_status)
+        assert hub._current_device_status == valid_status
+
+        # Passing error dictionary must be ignored
+        hub.set_current_device_status({"error": {"code": "UnexpectedError"}})
+        assert hub._current_device_status == valid_status
+
+        # Passing None or non-dict must be ignored
+        hub.set_current_device_status(None)
+        assert hub._current_device_status == valid_status
+        hub.set_current_device_status("not a dict")
+        assert hub._current_device_status == valid_status
+
+    def test_set_device_status_ignores_error_body(self, hub):
+        valid_devices = {"items": [{"deviceId": "d1", "capabilityId": "samsungce.viewInside", "attributeName": "contents"}]}
+        hub.set_device_status(valid_devices)
+        assert hub._device_status == valid_devices
+
+        hub.set_device_status({"error": {"code": "UnexpectedError"}})
+        assert hub._device_status == valid_devices
+
+    def test_download_images_returns_false_on_empty_file_ids(self, hub):
+        hub._current_device_status = {"other": "data"}
+        assert hub.get_file_ids() == []
+        assert hub.download_images() is False
+
+    @pytest.mark.asyncio
+    async def test_coordinator_continues_polling_on_repeated_download_failures(self, hass, hub):
+        import re
+        coordinator = DataCoordinator(hass, hub)
+        hub.should_update = False
+        hub._current_device_status = {
+            "samsungce.viewInside": {
+                "contents": {"value": [{"fileId": "changed_id"}]}
+            }
+        }
+        coordinator.last_file_ids = ["old_id"]
+
+        with rm.Mocker() as m:
+            # Mock image download failure (500 error)
+            m.get(re.compile(r"^https://client\.smartthings\.com/udo/file_links/.*"), status_code=500)
+            # Mock status polling with door open so should_update is not triggered
+            m.get(CURRENT_STATUS_URL, json={
+                "contactSensor": {"contact": {"value": "open", "timestamp": "2025-01-01"}},
+                "samsungce.viewInside": {"contents": {"value": [{"fileId": "changed_id"}]}}
+            })
+
+            # Poll 1-3: download fails, consecutive failures incremented
+            for i in range(1, 4):
+                await coordinator._async_update_data()
+                assert coordinator._consecutive_download_failures == i
+
+            # On attempt 4, status polling is called alongside download retry
+            await coordinator._async_update_data()
+            assert coordinator._consecutive_download_failures == 4
+            assert m.call_count >= 5
+

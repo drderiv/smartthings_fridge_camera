@@ -67,6 +67,7 @@ class DataCoordinator(DataUpdateCoordinator):
         self.last_updated_at = None
         self._consecutive_failures = 0
         self._max_consecutive_failures = 10
+        self._consecutive_download_failures = 0
         self._pat_expires_at = 0.0
 
         # State change listener to dynamically reload the integration when the PAT changes.
@@ -204,37 +205,55 @@ class DataCoordinator(DataUpdateCoordinator):
                     self.api.get_all_device_status
                 )
                 self.api.set_device_status(status)
+            file_ids = self.api.get_file_ids()
             if self.api.should_update:
                 _LOGGER.debug("should_update=True → sending refresh command to fridge")
                 await self._hass.async_add_executor_job(self.api.update_camera)
                 self.api.should_update = False
-            elif set(self.last_file_ids) != set(self.api.get_file_ids()):
-                new_ids = self.api.get_file_ids()
+            elif file_ids and set(self.last_file_ids) != set(file_ids):
                 _LOGGER.debug(
                     "file IDs changed: %s → %s, downloading images",
                     self.last_file_ids,
-                    new_ids,
+                    file_ids,
                 )
                 success = await self._hass.async_add_executor_job(
                     self.api.download_images
                 )
                 if success:
                     self.last_updated_at = time.time()
-                    self.last_file_ids = new_ids
+                    self.last_file_ids = file_ids
+                    self._consecutive_download_failures = 0
                     # Trigger food inventory sync upon door close / new camera snapshot upload
                     if getattr(self, "food_coordinator", None) is not None:
                         self.food_coordinator.async_trigger_door_close_sync(12)
                 else:
-                    _LOGGER.warning(
-                        "download_images returned no successes — will retry "
-                        "on next poll"
-                    )
+                    self._consecutive_download_failures += 1
+                    if self._consecutive_download_failures <= 3:
+                        _LOGGER.warning(
+                            "download_images returned no successes (attempt %d) — will retry on next poll",
+                            self._consecutive_download_failures,
+                        )
+                    elif self._consecutive_download_failures == 4:
+                        _LOGGER.warning(
+                            "download_images failed repeatedly (%d attempts) — suppressing further warnings until recovery",
+                            self._consecutive_download_failures,
+                        )
+                    # After repeated failures downloading changed file IDs, allow status polling
+                    # to continue so the coordinator does not deadlock on stale/invalid file IDs.
+                    if self._consecutive_download_failures >= 3:
+                        status = await self._hass.async_add_executor_job(
+                            self.api.get_current_device_status
+                        )
+                        if status and isinstance(status, dict) and "error" not in status:
+                            self.api.set_current_device_status(status)
+                            self.api.extract_device_data()
             else:
                 status = await self._hass.async_add_executor_job(
                     self.api.get_current_device_status
                 )
-                self.api.set_current_device_status(status)
-                self.api.extract_device_data()
+                if status and isinstance(status, dict) and "error" not in status:
+                    self.api.set_current_device_status(status)
+                    self.api.extract_device_data()
                 _LOGGER.debug(
                     "polled status: last_closed=%s should_update=%s file_ids=%s",
                     self.api.last_closed,
@@ -480,9 +499,16 @@ class FamilyHub:
         return True
 
     def set_device_status(self, status):
+        """Update device status list if the payload is valid."""
+        if not status or not isinstance(status, dict) or "error" in status:
+            return
         self._device_status = status
+        self.set_device_id()
 
     def set_current_device_status(self, status):
+        """Update current device status if the payload is valid."""
+        if not status or not isinstance(status, dict) or "error" in status:
+            return
         self._current_device_status = status
 
     def download_images(self) -> bool:
@@ -496,6 +522,8 @@ class FamilyHub:
             return False
 
         file_ids = self.get_file_ids()
+        if not file_ids:
+            return False
         # Start from the existing images so a partial failure doesn't wipe
         # slots that we can't refresh this cycle.
         result = list(self.downloaded_images)
@@ -542,6 +570,8 @@ class FamilyHub:
                             timeout=DEFAULT_TIMEOUT,
                         )
                 self._check_response(r)
+                if not r.ok or not r.content:
+                    raise RuntimeError(f"Download failed with status {r.status_code}")
                 content_type = r.headers.get("content-type", "")
                 _LOGGER.debug(
                     "download_images[%d]: file_id=%s url=%s status=%s "
