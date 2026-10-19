@@ -80,30 +80,63 @@ def test_default_redirect_uri_is_home_assistant_standard():
 @pytest.mark.asyncio
 async def test_food_circle_view_properties_and_serving():
     """Verify FamilyHubFoodCircleView properties, access controls, and path safety."""
+    from custom_components.samsung_familyhub_fridge.views import generate_food_circle_sig
+
     temp_dir = tempfile.mkdtemp()
+    secret = "integration_secret_test_123"
     try:
         # Create a sample image file in protected storage
-        img_file = os.path.join(temp_dir, "test_crop_12345678.jpg")
+        filename = "test_crop_12345678.jpg"
+        img_file = os.path.join(temp_dir, filename)
         with open(img_file, "wb") as f:
             f.write(b"fake_jpeg_content")
 
-        view = FamilyHubFoodCircleView(temp_dir)
+        view = FamilyHubFoodCircleView(temp_dir, secret=secret)
         assert view.url == "/api/samsung_familyhub/food_circles/{filename}"
         assert view.name == "api:samsung_familyhub:food_circles"
-        assert view.requires_auth is True
 
-        # Valid request
-        req = MagicMock()
-        resp = await view.get(req, "test_crop_12345678.jpg")
+        # 1. Unauthorized request (no user, no sig) -> 401
+        unauth_req = {"hass_user": None, "query": {}}
+        unauth_req_obj = MagicMock()
+        unauth_req_obj.get.side_effect = lambda k: unauth_req.get(k)
+        unauth_req_obj.query = unauth_req["query"]
+        resp_unauth = await view.get(unauth_req_obj, filename)
+        assert resp_unauth.status == 401
+
+        # 2. Valid request with compact HMAC signature -> 200 FileResponse
+        sig = generate_food_circle_sig(secret, filename)
+        assert len(sig) == 16
+        auth_req = {"hass_user": None, "query": {"sig": sig}}
+        auth_req_obj = MagicMock()
+        auth_req_obj.get.side_effect = lambda k: auth_req.get(k)
+        auth_req_obj.query = auth_req["query"]
+        resp = await view.get(auth_req_obj, filename)
         assert resp.path == img_file
 
-        # Nonexistent file -> 404
-        resp_404 = await view.get(req, "missing.jpg")
+        # 3. Valid request with logged-in HA user -> 200 FileResponse
+        user_req = {"hass_user": MagicMock(), "query": {}}
+        user_req_obj = MagicMock()
+        user_req_obj.get.side_effect = lambda k: user_req.get(k)
+        user_req_obj.query = user_req["query"]
+        resp_user = await view.get(user_req_obj, filename)
+        assert resp_user.path == img_file
+
+        # 4. Nonexistent file with valid sig -> 404
+        missing_sig = generate_food_circle_sig(secret, "missing.jpg")
+        missing_req = {"hass_user": None, "query": {"sig": missing_sig}}
+        missing_req_obj = MagicMock()
+        missing_req_obj.get.side_effect = lambda k: missing_req.get(k)
+        missing_req_obj.query = missing_req["query"]
+        resp_404 = await view.get(missing_req_obj, "missing.jpg")
         assert resp_404.status == 404
 
-        # Directory traversal attempts -> 400
+        # 5. Directory traversal attempts -> 400
         for bad_filename in ["../secret.txt", "..\\secret.txt", "sub/file.jpg", "/etc/passwd"]:
-            resp_bad = await view.get(req, bad_filename)
+            bad_req = {"hass_user": MagicMock(), "query": {}}
+            bad_req_obj = MagicMock()
+            bad_req_obj.get.side_effect = lambda k: bad_req.get(k)
+            bad_req_obj.query = bad_req["query"]
+            resp_bad = await view.get(bad_req_obj, bad_filename)
             assert resp_bad.status == 400
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -197,3 +230,35 @@ def test_last_updated_at_sensor_native_value_and_metadata():
     # Zero timestamp assertion
     coordinator.last_updated_at = 0
     assert sensor.native_value is None
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Attribute size stay safely under Home Assistant's 16KB (16,384 bytes) limit
+# ---------------------------------------------------------------------------
+
+def test_food_circle_attributes_stay_under_16k_limit():
+    """Verify state attributes for 35 food items stay well under 16,384 bytes."""
+    import json
+    from custom_components.samsung_familyhub_fridge.views import generate_food_circle_sig
+
+    secret = "sample_stable_secret_12345"
+    items = []
+    for i in range(35):
+        filename = f"hash_{i:04d}_abcdef12.jpg"
+        sig = generate_food_circle_sig(secret, filename)
+        url = f"/api/samsung_familyhub/food_circles/{filename}?sig={sig}"
+        items.append({
+            "name": f"Food Item Number {i} Delicious Organic",
+            "image_url": url,
+            "added_at": 1729350000 + (i * 3600),
+        })
+
+    payload = {
+        "total_items": len(items),
+        "last_synced": "2026-10-19T16:22:27.824628+00:00",
+        "items": items,
+    }
+
+    serialized = json.dumps(payload)
+    # Must be less than half of the 16,384 bytes limit
+    assert len(serialized) < 8000, f"Payload size {len(serialized)} exceeded 8KB target"

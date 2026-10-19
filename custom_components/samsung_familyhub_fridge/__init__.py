@@ -147,10 +147,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as mig_err:
             _LOGGER.debug("Legacy food circles migration note: %s", mig_err)
 
+    # Setup stable signing secret based on entry_id
+    auth_secret = hass.data[DOMAIN].get("auth_secret") or entry.entry_id
+    hass.data[DOMAIN]["auth_secret"] = auth_secret
+
     # Register authenticated HTTP view for food circles
     if not hass.data[DOMAIN].get("view_registered"):
         if hasattr(hass, "http") and hasattr(hass.http, "register_view"):
-            hass.http.register_view(FamilyHubFoodCircleView(storage_cache_dir))
+            hass.http.register_view(FamilyHubFoodCircleView(storage_cache_dir, secret=auth_secret))
         hass.data[DOMAIN]["view_registered"] = True
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

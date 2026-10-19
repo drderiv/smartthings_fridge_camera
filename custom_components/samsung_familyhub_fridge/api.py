@@ -1179,12 +1179,12 @@ class SamsungFoodClient:
                         remote_url = image_url or stock_photo
                         final_url = remote_url
 
-                        # Cache image locally to shrink attributes from 70KB to ~2KB and prevent S3 expiry
+                        # Cache image locally to shrink attributes from 70KB to ~4KB and prevent S3 expiry
                         if remote_url and os.path.exists(cache_dir):
-                            clean_id = re.sub(r"[^\w\-]", "_", item_id) or "item"
+                            id_hash = hashlib.md5(item_id.encode("utf-8")).hexdigest()[:10]
                             url_base = remote_url.split("?")[0]
                             url_hash = hashlib.md5(url_base.encode("utf-8")).hexdigest()[:8]
-                            filename = f"{clean_id}_{url_hash}.jpg"
+                            filename = f"{id_hash}_{url_hash}.jpg"
                             active_filenames.add(filename)
                             dest_file = os.path.join(cache_dir, filename)
 
@@ -1200,17 +1200,10 @@ class SamsungFoodClient:
                                     _LOGGER.debug("Could not cache image for %s: %s", name, dl_err)
 
                             if os.path.exists(dest_file) and os.path.getsize(dest_file) > 0:
-                                url_path = f"/api/samsung_familyhub/food_circles/{filename}"
-                                final_url = url_path
-                                try:
-                                    from homeassistant.components.http.auth import async_sign_path
-                                    final_url = async_sign_path(self.hass, url_path, timedelta(days=7))
-                                except Exception:
-                                    if hasattr(self.hass, "http") and hasattr(self.hass.http, "async_sign_path"):
-                                        try:
-                                            final_url = self.hass.http.async_sign_path(url_path, timedelta(days=7))
-                                        except Exception:
-                                            final_url = url_path
+                                from .views import generate_food_circle_sig
+                                auth_secret = self.hass.data.get(DOMAIN, {}).get("auth_secret", "")
+                                sig = generate_food_circle_sig(auth_secret, filename) if auth_secret else ""
+                                final_url = f"/api/samsung_familyhub/food_circles/{filename}" + (f"?sig={sig}" if sig else "")
 
                         raw_ts = (
                             content.get("addedAt")
@@ -1220,12 +1213,20 @@ class SamsungFoodClient:
                             or content.get("createdTime")
                             or 0
                         )
-                        active_items.append({
+                        sec_ts = (
+                            int(raw_ts) // 1000
+                            if str(raw_ts).isdigit() and int(raw_ts) > 10000000000
+                            else (int(raw_ts) if str(raw_ts).isdigit() else 0)
+                        )
+                        item_dict = {
                             "name": name,
                             "image_url": final_url,
-                            "added_at": int(raw_ts) if str(raw_ts).isdigit() else 0,
-                            "expiration_date": content.get("expirationDate") or content.get("expiration_date") or None,
-                        })
+                            "added_at": sec_ts,
+                        }
+                        exp_date = content.get("expirationDate") or content.get("expiration_date")
+                        if exp_date:
+                            item_dict["expiration_date"] = exp_date
+                        active_items.append(item_dict)
 
                     # Prune obsolete/consumed food circle images from previous syncs
                     try:
