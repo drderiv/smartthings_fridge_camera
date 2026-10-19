@@ -10,13 +10,13 @@ This document details the major functional enhancements, architectural upgrades,
 | :--- | :--- | :--- |
 | **Food Inventory Tracking** | ❌ Not supported (only camera feeds) | ✅ **AI Food Manager (`sensor.fridge_food_inventory`)**: Tracks active food items, live circular camera crops, stock photos, expiration dates, and item age ("Days Old") |
 | **Live Camera Food Circles** | ❌ Not supported | ✅ **KICS EPA Food Circles**: Retrieves actual circular camera cutouts of food items taken by the fridge's interior camera + seamless fallback to catalog stock photos |
-| **Local Image Caching & HA Protection** | ❌ None | ✅ **Local Image Cache (`/config/www/...`)**: Keeps state attributes lean (~2.2KB) to stay safely under Home Assistant's 16KB database recorder limit, with auto cache-busting and stale file pruning |
+| **Local Image Caching & HA Protection** | ❌ None | ✅ **Protected Image Cache (`.storage/...`)**: Keeps state attributes lean (~2.2KB) to stay safely under Home Assistant's 16KB database recorder limit, with auto cache-busting, stale file pruning, and authenticated HTTP serving via `async_sign_path` |
 | **Persistence & Cloud Fault Tolerance** | ❌ Memory wiped on reboot; no cloud retry | ✅ **Persistent On-Disk Cache (`inventory.json`)** across Home Assistant reboots + 3-attempt exponential backoff retry on cloud gateway timeouts (502/503/504) |
 | **Inventory Sync Trigger** | ❌ None | ✅ **Automatic door-close triggered sync** with cloud vision commit delay (~12s) + periodic polling |
 | **Token Lifetime & Rotation** | ⚠️ Expired after 24h (PAT), requiring manual recreation | ✅ **Autonomous Multi-Token Rotator microservice**: Headless renewal of SmartThings PAT (every 23h) and Samsung Food / KICS tokens with local REST server and zero downtime |
 | **Token Synchronization & Caching** | ❌ Required manual re-auth / integration restart | ✅ **Native Options Flow (`rotator_url`) + Startup Priming & In-Memory TTL Caching**: Single startup query, zero routine rotator polling, and optional legacy helper listeners |
 | **Async Architecture** | ⚠️ Synchronous file I/O in event loop | ✅ **100% Non-Blocking**: All file operations, image caching, and network calls offloaded to worker threads via `hass.async_add_executor_job()` |
-| **Authentication Options** | ⚠️ PAT only | ✅ **Multi-Mode Authentication**: Home Assistant Core OAuth2 reuse, Standalone Developer OAuth2, or automated PAT rotation |
+| **Authentication Options** | ⚠️ PAT only | ✅ **Multi-Mode Authentication**: Standalone Developer OAuth2 or automated PAT rotation |
 | **Dashboard UI** | 📷 Basic camera entity cards | 🥗 **Production 2-Column Template**: Food inventory table with full-photo click-to-zoom (`target="_blank"`, `🔎`), zero row distortion, and 5:6 aspect-ratio stacked door cameras |
 
 ---
@@ -52,7 +52,7 @@ For Samsung Family Hub refrigerators equipped with internal cameras and AI food 
 
 * **Home Assistant Recorder Protection**:
   * Refrigerator camera crop URLs are hosted on AWS S3 with extensive signed security parameters. Storing dozens of long remote URLs in Home Assistant entity attributes would produce payloads exceeding 70KB, violating Home Assistant's 16KB database recorder limit and producing database warnings.
-  * This integration downloads image crops locally to `/config/www/samsung_familyhub/food_circles/<clean_id>_<url_hash>.jpg` and exposes them via `/local/samsung_familyhub/food_circles/...`.
+  * This integration downloads image crops locally to `.storage/samsung_familyhub/food_circles/<clean_id>_<url_hash>.jpg` and exposes them via authenticated signed paths (`/api/samsung_familyhub/food_circles/...`).
   * **97% Size Reduction**: Shrinks the `sensor.fridge_food_inventory` attribute payload from **>70KB down to ~2.2KB**, eliminating recorder warnings and reducing database overhead.
 * **Automatic Cache-Busting**:
   * The integration computes an MD5 hash of the canonical S3 image path. When the refrigerator takes a new photo of an item, a new hash is generated, automatically updating the filename and busting browser caches.
