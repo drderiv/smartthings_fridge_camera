@@ -13,7 +13,7 @@ CONF_SAMSUNG_IOT_REFRESH_TOKEN = "samsung_iot_refresh_token"
 CONF_SAMSUNG_IOT_AUTH_SERVER = "samsung_iot_auth_server"
 
 # Auth mode values
-AUTH_MODE_OAUTH = "oauth"             # reuse HA core smartthings OAuth2 credentials
+AUTH_MODE_OAUTH = "oauth"             # Deprecated: borrowed core smartthings oauth (removed in v1.1.3)
 AUTH_MODE_PAT = "pat"                 # legacy: raw SmartThings Personal Access Token
 AUTH_MODE_STANDALONE_OAUTH = "standalone_oauth"  # custom SmartThings app credentials
 
@@ -24,9 +24,6 @@ CONF_OAUTH_REFRESH_TOKEN = "oauth_refresh_token"
 
 # Samsung Account signin secret (optional; from SmartThings APK decompilation)
 CONF_SAMSUNG_SIGNIN_CLIENT_SECRET = "samsung_signin_client_secret"
-
-# Domain of the HA core SmartThings integration we piggyback on
-SMARTTHINGS_DOMAIN = "smartthings"
 
 # Samsung Food (Whisk) AI Food Manager constants
 CONF_FOOD_TOKEN = "food_token"

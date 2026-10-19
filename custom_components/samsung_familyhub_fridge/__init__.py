@@ -26,13 +26,13 @@ load via `async_migrate_entry`.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
 from .api import FamilyHub
 from .const import (
@@ -41,7 +41,6 @@ from .const import (
     AUTH_MODE_STANDALONE_OAUTH,
     CONF_AUTH_MODE,
     CONF_DEVICE_ID,
-    CONF_LINKED_SMARTTHINGS_ENTRY_ID,
     CONF_OAUTH_CLIENT_ID,
     CONF_OAUTH_CLIENT_SECRET,
     CONF_OAUTH_REFRESH_TOKEN,
@@ -51,8 +50,8 @@ from .const import (
     CONF_TOKEN,
     DEFAULT_ROTATOR_URL,
     DOMAIN,
-    SMARTTHINGS_DOMAIN,
 )
+from .views import FamilyHubFoodCircleView
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,7 +66,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     device_id = entry.data.get(CONF_DEVICE_ID)
 
     if auth_mode == AUTH_MODE_OAUTH:
-        hub = await _build_oauth_hub(hass, entry, device_id)
+        raise ConfigEntryAuthFailed(
+            "Borrowed SmartThings OAuth mode has been removed per Home Assistant architectural policies. "
+            "Please reconfigure the integration in Settings → Devices & Services using Standalone OAuth or a PAT."
+        )
     elif auth_mode == AUTH_MODE_STANDALONE_OAUTH:
         hub = await _build_standalone_oauth_hub(hass, entry, device_id)
     else:
@@ -126,6 +128,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
+    # Ensure protected storage directory exists for private food circle thumbnail images
+    storage_cache_dir = hass.config.path(".storage/samsung_familyhub/food_circles")
+    os.makedirs(storage_cache_dir, exist_ok=True)
+
+    # Migrate any legacy food circles cached in public www/ to protected .storage/
+    legacy_cache_dir = hass.config.path("www/samsung_familyhub/food_circles")
+    if os.path.exists(legacy_cache_dir):
+        try:
+            import shutil
+            for fname in os.listdir(legacy_cache_dir):
+                src = os.path.join(legacy_cache_dir, fname)
+                dst = os.path.join(storage_cache_dir, fname)
+                if os.path.isfile(src) and not os.path.exists(dst):
+                    shutil.move(src, dst)
+            shutil.rmtree(legacy_cache_dir, ignore_errors=True)
+            _LOGGER.info("Migrated legacy food circle images from www/ to .storage/")
+        except Exception as mig_err:
+            _LOGGER.debug("Legacy food circles migration note: %s", mig_err)
+
+    # Register authenticated HTTP view for food circles
+    if not hass.data[DOMAIN].get("view_registered"):
+        if hasattr(hass, "http") and hasattr(hass.http, "register_view"):
+            hass.http.register_view(FamilyHubFoodCircleView(storage_cache_dir))
+        hass.data[DOMAIN]["view_registered"] = True
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async def _handle_refresh(call: ServiceCall) -> None:
@@ -153,84 +180,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "refresh_food_inventory", _handle_refresh_food)
 
     return True
-
-
-async def _build_oauth_hub(
-    hass: HomeAssistant, entry: ConfigEntry, device_id: str | None
-) -> FamilyHub:
-    """Construct a FamilyHub that borrows the HA core smartthings OAuth session.
-
-    Raises ConfigEntryNotReady if the linked smartthings entry is missing or
-    not loaded yet — HA will retry the setup automatically.
-    """
-    linked_id = entry.data.get(CONF_LINKED_SMARTTHINGS_ENTRY_ID)
-    if not linked_id:
-        raise ConfigEntryNotReady(
-            "OAuth-mode entry missing linked_smartthings_entry_id — "
-            "reconfigure to re-link the HA core SmartThings integration."
-        )
-
-    smartthings_entry = hass.config_entries.async_get_entry(linked_id)
-    if smartthings_entry is None or smartthings_entry.domain != SMARTTHINGS_DOMAIN:
-        raise ConfigEntryNotReady(
-            f"Linked SmartThings entry {linked_id} not found. "
-            "Re-add the HA core SmartThings integration and reconfigure this one."
-        )
-
-    impl = await config_entry_oauth2_flow.async_get_config_entry_implementation(
-        hass, smartthings_entry
-    )
-    session = config_entry_oauth2_flow.OAuth2Session(hass, smartthings_entry, impl)
-
-    try:
-        await session.async_ensure_token_valid()
-    except Exception as err:  # pylint: disable=broad-except
-        # OAuth2Session wraps errors in aiohttp/client exceptions. The SmartThings
-        # entry itself will handle reauth — we just need to back off here.
-        raise ConfigEntryNotReady(
-            f"Failed to obtain a fresh SmartThings OAuth token: {err}"
-        ) from err
-
-    token = session.token["access_token"]
-    hub = FamilyHub(hass, token=token, device_id=device_id)
-    hub.attach_oauth_session(session)
-
-    # Attach Samsung IoT token for client.smartthings.com image downloads.
-    # This is a separate token from the SmartThings API OAuth — it carries
-    # Samsung Account identity which the udo/file_links endpoint requires.
-    iot_refresh = entry.data.get(CONF_SAMSUNG_IOT_REFRESH_TOKEN)
-    iot_server = entry.data.get(
-        CONF_SAMSUNG_IOT_AUTH_SERVER, "https://us-auth2.samsungosp.com"
-    )
-    if iot_refresh:
-        try:
-            from .auth import refresh_samsung_iot_token
-
-            iot_creds = await hass.async_add_executor_job(
-                refresh_samsung_iot_token, iot_refresh, iot_server
-            )
-            hub.set_samsung_iot_token(
-                iot_creds.access_token,
-                refresh_token=iot_creds.refresh_token,
-                auth_server=iot_server,
-                entry=entry,
-            )
-            # Persist the new refresh token for next startup
-            if iot_creds.refresh_token != iot_refresh:
-                new_data = {
-                    **entry.data,
-                    CONF_SAMSUNG_IOT_REFRESH_TOKEN: iot_creds.refresh_token,
-                }
-                hass.config_entries.async_update_entry(entry, data=new_data)
-            _LOGGER.info("Samsung IoT token refreshed for image downloads")
-        except Exception as err:  # pylint: disable=broad-except
-            _LOGGER.warning(
-                "Could not refresh Samsung IoT token — image downloads "
-                "will fail until resolved: %s",
-                err,
-            )
-
-    return hub
 
 
 async def _build_standalone_oauth_hub(

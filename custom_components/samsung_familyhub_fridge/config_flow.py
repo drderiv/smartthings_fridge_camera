@@ -22,7 +22,6 @@ from .const import (
     CONF_AUTH_MODE,
     CONF_DEVICE_ID,
     CONF_FOOD_UPDATE_INTERVAL,
-    CONF_LINKED_SMARTTHINGS_ENTRY_ID,
     CONF_LOCATION_ID,
     CONF_OAUTH_CLIENT_ID,
     CONF_OAUTH_CLIENT_SECRET,
@@ -37,7 +36,6 @@ from .const import (
     DEFAULT_FOOD_UPDATE_INTERVAL,
     DEFAULT_ROTATOR_URL,
     DOMAIN,
-    SMARTTHINGS_DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,51 +65,6 @@ async def _validate_pat(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, 
     return data
 
 
-async def _validate_oauth(
-    hass: HomeAssistant, smartthings_entry_id: str, device_id: str | None
-) -> dict[str, Any]:
-    """Validate that we can borrow the SmartThings OAuth session, probe the fridge."""
-    smartthings_entry = hass.config_entries.async_get_entry(smartthings_entry_id)
-    if smartthings_entry is None or smartthings_entry.domain != SMARTTHINGS_DOMAIN:
-        raise CannotConnect(
-            f"Linked SmartThings entry {smartthings_entry_id} not found"
-        )
-
-    impl = await config_entry_oauth2_flow.async_get_config_entry_implementation(
-        hass, smartthings_entry
-    )
-    session = config_entry_oauth2_flow.OAuth2Session(hass, smartthings_entry, impl)
-    try:
-        await session.async_ensure_token_valid()
-    except Exception as err:  # pylint: disable=broad-except
-        raise InvalidAuth from err
-
-    token = session.token["access_token"]
-    hub = FamilyHub(hass, token=token, device_id=device_id)
-    hub.attach_oauth_session(session)
-
-    try:
-        if not await hub.authenticate():
-            raise InvalidAuth
-    except AuthenticationError as err:
-        raise InvalidAuth from err
-
-    return {
-        CONF_AUTH_MODE: AUTH_MODE_OAUTH,
-        CONF_LINKED_SMARTTHINGS_ENTRY_ID: smartthings_entry_id,
-        CONF_DEVICE_ID: device_id or hub.device_id,
-    }
-
-
-def _smartthings_entries(hass: HomeAssistant) -> list[config_entries.ConfigEntry]:
-    """Return all loaded HA core smartthings config entries."""
-    return [
-        e
-        for e in hass.config_entries.async_entries(SMARTTHINGS_DOMAIN)
-        if e.source != config_entries.SOURCE_IGNORE
-    ]
-
-
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Samsung FamilyHub Fridge."""
 
@@ -128,58 +81,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """First step — offer OAuth reuse if a smartthings entry exists."""
-        if _smartthings_entries(self.hass):
-            return self.async_show_menu(
-                step_id="user",
-                menu_options=["oauth", "standalone_oauth", "pat"],
-            )
-        # No HA core smartthings entry → offer standalone OAuth or PAT
+        """First step — offer standalone OAuth or PAT."""
         return self.async_show_menu(
             step_id="user",
             menu_options=["standalone_oauth", "pat"],
-        )
-
-    # ---------------- OAuth path ----------------
-
-    async def async_step_oauth(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Offer to reuse an existing HA core SmartThings OAuth entry."""
-        entries = _smartthings_entries(self.hass)
-        if not entries:
-            return await self.async_step_pat()
-
-        errors: dict[str, str] = {}
-        options = {e.entry_id: e.title or e.entry_id for e in entries}
-
-        if user_input is not None:
-            try:
-                data = await _validate_oauth(
-                    self.hass,
-                    user_input[CONF_LINKED_SMARTTHINGS_ENTRY_ID],
-                    user_input.get(CONF_DEVICE_ID) or None,
-                )
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception during OAuth validation")
-                errors["base"] = "unknown"
-            else:
-                return self.async_create_entry(
-                    title="Samsung Fridge Camera (OAuth)", data=data
-                )
-
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_LINKED_SMARTTHINGS_ENTRY_ID): vol.In(options),
-                vol.Optional(CONF_DEVICE_ID): str,
-            }
-        )
-        return self.async_show_form(
-            step_id="oauth", data_schema=schema, errors=errors
         )
 
     # ---------------- Standalone OAuth path ----------------
@@ -203,13 +108,21 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             elif not client_secret:
                 errors[CONF_OAUTH_CLIENT_SECRET] = "required"
             else:
+                try:
+                    redirect_uri = config_entry_oauth2_flow.async_get_redirect_uri(self.hass)
+                except Exception:
+                    from .auth import DEFAULT_REDIRECT_URI
+                    redirect_uri = DEFAULT_REDIRECT_URI
+
                 oauth = SmartThingsOAuth(
                     client_id=client_id,
                     client_secret=client_secret,
+                    redirect_uri=redirect_uri,
                 )
                 self._standalone_oauth = oauth
                 self._standalone_client_id = client_id
                 self._standalone_client_secret = client_secret
+                self._standalone_redirect_uri = redirect_uri
                 self._standalone_auth_url = oauth.get_authorization_url()
                 return await self.async_step_standalone_oauth_link()
 
@@ -420,12 +333,21 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             elif not client_secret:
                 errors[CONF_OAUTH_CLIENT_SECRET] = "required"
             else:
+                try:
+                    redirect_uri = config_entry_oauth2_flow.async_get_redirect_uri(self.hass)
+                except Exception:
+                    from .auth import DEFAULT_REDIRECT_URI
+                    redirect_uri = DEFAULT_REDIRECT_URI
+
                 oauth = SmartThingsOAuth(
-                    client_id=client_id, client_secret=client_secret
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    redirect_uri=redirect_uri,
                 )
                 self._reauth_standalone_oauth = oauth
                 self._reauth_standalone_client_id = client_id
                 self._reauth_standalone_client_secret = client_secret
+                self._reauth_standalone_redirect_uri = redirect_uri
                 self._reauth_standalone_auth_url = oauth.get_authorization_url()
                 return await self.async_step_reauth_standalone_oauth_link()
 

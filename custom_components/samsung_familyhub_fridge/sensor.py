@@ -1,7 +1,8 @@
 from __future__ import annotations
+from datetime import datetime, timezone
 import logging
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -34,15 +35,14 @@ async def async_setup_entry(
     """Set up Samsung FamilyHub Fridge sensors."""
     hub = hass.data[DOMAIN]["hub"]
     coordinator = DataCoordinator(hass, hub)
-    entities: list[SensorEntity] = [LastUpdatedAt(coordinator)]
+    device_id = config_entry.data.get(CONF_DEVICE_ID) or "samsung_familyhub"
+    entities: list[SensorEntity] = [LastUpdatedAt(coordinator, device_id)]
 
     startup_data = getattr(hub, "startup_rotator_data", {})
     if startup_data:
         pat_next = startup_data.get("pat_next_rotation_at") or startup_data.get("next_rotation_at")
         if pat_next:
             coordinator._pat_expires_at = float(pat_next)
-
-    device_id = config_entry.data.get(CONF_DEVICE_ID) or "samsung_familyhub"
 
     # Opt-in: Check if Samsung Food (Whisk) or KICS Food Circles token is available
     food_token = config_entry.data.get(CONF_FOOD_TOKEN) or config_entry.data.get(CONF_KICS_TOKEN)
@@ -116,20 +116,22 @@ async def async_setup_entry(
 class LastUpdatedAt(CoordinatorEntity, SensorEntity):
     """Sensor tracking the timestamp of the last camera/fridge update."""
 
-    def __init__(self, coordinator: DataCoordinator) -> None:
-        self._last_updated_at = None
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_name = "Last Updated At"
+
+    def __init__(self, coordinator: DataCoordinator, device_id: str | None = None) -> None:
+        """Initialize the LastUpdatedAt sensor."""
         super().__init__(coordinator)
+        dev_id = device_id or getattr(coordinator.api, "device_id", None) or "samsung_familyhub"
+        self._attr_unique_id = f"{dev_id}_last_updated_at"
 
     @property
-    def last_updated_at(self) -> str | None:
-        return self._last_updated_at
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self._last_updated_at = self.coordinator.last_updated_at
-        if self._last_updated_at:
-            self.async_write_ha_state()
+    def native_value(self) -> datetime | None:
+        """Return the timestamp of the last camera/fridge update."""
+        ts = self.coordinator.last_updated_at
+        if ts is not None and isinstance(ts, (int, float)) and ts > 0:
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        return None
 
 
 class SamsungFridgeFoodInventorySensor(CoordinatorEntity[SamsungFoodCoordinator], SensorEntity):

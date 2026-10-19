@@ -203,6 +203,11 @@ class _HomeAssistant:
         self.states = MagicMock()
         self.states.get = MagicMock(return_value=None)
         self.data = {}
+        self.http = MagicMock()
+        self.http.register_view = MagicMock()
+        self.http.async_sign_path = MagicMock(side_effect=lambda path, exp: f"{path}?authSig=mockSignature")
+        self.config = MagicMock()
+        self.config.path = MagicMock(side_effect=lambda *p: os.path.join("/tmp/mock_ha_config", *p))
 
     def add_job(self, target, *args):
         if callable(target):
@@ -215,9 +220,10 @@ class _HomeAssistant:
 class _ConfigEntry:
     """Minimal stub of homeassistant.config_entries.ConfigEntry."""
 
-    def __init__(self, entry_id="test", data=None):
+    def __init__(self, entry_id="test", data=None, options=None):
         self.entry_id = entry_id
         self.data = data or {}
+        self.options = options or {}
         self._update_listeners = []
 
     def add_update_listener(self, listener):
@@ -251,9 +257,16 @@ class _CoordinatorEntity:
     def __init__(self, coordinator):
         self.coordinator = coordinator
 
+    def __class_getitem__(cls, item):
+        return cls
+
 
 class _SensorEntity:
     pass
+
+
+class _SensorDeviceClass:
+    TIMESTAMP = "timestamp"
 
 
 class _Camera:
@@ -427,7 +440,43 @@ ha_helpers_oauth2 = _make_module(
     "homeassistant.helpers.config_entry_oauth2_flow",
     OAuth2Session=_OAuth2SessionStub,
     async_get_config_entry_implementation=_async_get_config_entry_implementation_stub,
+    async_get_redirect_uri=lambda hass: "https://my.home-assistant.io/redirect/oauth",
 )
+
+# http component
+class _HomeAssistantView:
+    url = ""
+    name = ""
+    requires_auth = True
+
+ha_components_http = _make_module(
+    "homeassistant.components.http",
+    HomeAssistantView=_HomeAssistantView,
+)
+ha_components_http_auth = _make_module(
+    "homeassistant.components.http.auth",
+    async_sign_path=lambda hass, path, expiration, **kw: f"{path}?authSig=mockSignature",
+)
+
+# aiohttp
+class _WebResponse:
+    def __init__(self, body=None, status=200, text=None, **kw):
+        self.body = body
+        self.status = status
+        self.text = text
+
+class _WebFileResponse(_WebResponse):
+    def __init__(self, path, **kw):
+        super().__init__(**kw)
+        self.path = path
+
+aiohttp_web_mod = _make_module(
+    "aiohttp.web",
+    Response=_WebResponse,
+    FileResponse=_WebFileResponse,
+    Request=MagicMock,
+)
+aiohttp_mod = _make_module("aiohttp", web=aiohttp_web_mod)
 
 # components tree
 ha_components = _make_module("homeassistant.components")
@@ -445,6 +494,7 @@ ha_components_sensor = _make_module(
     "homeassistant.components.sensor",
     PLATFORM_SCHEMA=MagicMock,
     SensorEntity=_SensorEntity,
+    SensorDeviceClass=_SensorDeviceClass,
 )
 ha_components_update = _make_module(
     "homeassistant.components.update",
@@ -455,6 +505,8 @@ ha_components_update = _make_module(
 
 # Register all in sys.modules
 _modules = {
+    "aiohttp": aiohttp_mod,
+    "aiohttp.web": aiohttp_web_mod,
     "homeassistant": ha,
     "homeassistant.core": ha_core,
     "homeassistant.config_entries": ha_config_entries,
@@ -470,6 +522,8 @@ _modules = {
     "homeassistant.helpers.config_entry_oauth2_flow": ha_helpers_oauth2,
     "homeassistant.components": ha_components,
     "homeassistant.components.camera": ha_components_camera,
+    "homeassistant.components.http": ha_components_http,
+    "homeassistant.components.http.auth": ha_components_http_auth,
     "homeassistant.components.local_file": ha_components_local_file,
     "homeassistant.components.local_file.camera": ha_components_local_file_camera,
     "homeassistant.components.sensor": ha_components_sensor,

@@ -53,9 +53,8 @@ SAMSUNG_SCOPES = "iot.client+mcs.client+galaxystore.openapi"
 SAMSUNG_LOGIN_CLIENT_ID = "yfrtglt53o"
 SAMSUNG_IOT_CLIENT_ID = "6iado3s6jc"
 
-# Default redirect URI — httpbin echoes query params, making it easy to copy
-# the authorization code.  Users may substitute their own.
-DEFAULT_REDIRECT_URI = "https://httpbin.org/get"
+# Default redirect URI — standard Home Assistant OAuth redirect.
+DEFAULT_REDIRECT_URI = "https://my.home-assistant.io/redirect/oauth"
 
 
 def _generate_pkce_pair() -> tuple[str, str]:

@@ -65,7 +65,8 @@ async def test_step_user_no_smartthings_entries_shows_standalone_and_pat():
 
 
 @pytest.mark.asyncio
-async def test_step_user_with_smartthings_entries_shows_all_three():
+async def test_step_user_with_smartthings_entries_does_not_show_borrowed_oauth():
+    """Verify borrowed OAuth mode is not offered, even if core smartthings entries exist."""
     hass = _HomeAssistant()
     entry = MagicMock()
     entry.source = "user"
@@ -76,7 +77,7 @@ async def test_step_user_with_smartthings_entries_shows_all_three():
     result = await flow.async_step_user()
 
     options = result["menu_options"]
-    assert "oauth" in options
+    assert "oauth" not in options
     assert "standalone_oauth" in options
     assert "pat" in options
 

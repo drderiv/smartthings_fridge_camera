@@ -1,0 +1,199 @@
+"""Unit tests for the 5 HACS code review fixes.
+
+1. Drop borrowed SmartThings OAuth mode -> ConfigEntryAuthFailed on setup.
+2. Standard Home Assistant OAuth redirect URI (no httpbin).
+3. Private food circle storage in .storage/samsung_familyhub/food_circles and authenticated HomeAssistantView.
+4. api.py has import json.
+5. LastUpdatedAt sensor has timestamp device class, unique_id, and datetime native_value.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import os
+import shutil
+import tempfile
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from tests.conftest import _ConfigEntry, _HomeAssistant
+
+from custom_components.samsung_familyhub_fridge import async_setup_entry
+from custom_components.samsung_familyhub_fridge.auth import DEFAULT_REDIRECT_URI, SmartThingsOAuth
+from custom_components.samsung_familyhub_fridge.const import (
+    AUTH_MODE_OAUTH,
+    AUTH_MODE_PAT,
+    CONF_AUTH_MODE,
+    CONF_DEVICE_ID,
+    CONF_TOKEN,
+    DOMAIN,
+)
+from custom_components.samsung_familyhub_fridge.views import FamilyHubFoodCircleView
+from custom_components.samsung_familyhub_fridge.sensor import LastUpdatedAt
+import custom_components.samsung_familyhub_fridge.api as api_module
+
+
+# ---------------------------------------------------------------------------
+# Test 1: Drop borrowed SmartThings OAuth mode
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_borrowed_oauth_mode_raises_config_entry_auth_failed():
+    """An entry with auth_mode='oauth' must fail with ConfigEntryAuthFailed."""
+    from homeassistant.exceptions import ConfigEntryAuthFailed
+
+    hass = _HomeAssistant()
+    entry = _ConfigEntry(
+        entry_id="legacy-oauth-entry",
+        data={
+            CONF_AUTH_MODE: AUTH_MODE_OAUTH,
+            CONF_DEVICE_ID: "test-device-id",
+        },
+    )
+
+    with pytest.raises(ConfigEntryAuthFailed) as exc_info:
+        await async_setup_entry(hass, entry)
+
+    assert "Borrowed SmartThings OAuth mode has been removed" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Test 2: OAuth redirect URI to standard Home Assistant redirect
+# ---------------------------------------------------------------------------
+
+def test_default_redirect_uri_is_home_assistant_standard():
+    """DEFAULT_REDIRECT_URI must point to Home Assistant's official redirect endpoint, not httpbin."""
+    assert DEFAULT_REDIRECT_URI == "https://my.home-assistant.io/redirect/oauth"
+    assert "httpbin" not in DEFAULT_REDIRECT_URI
+
+    oauth = SmartThingsOAuth(client_id="my-client", client_secret="my-secret")
+    assert oauth.redirect_uri == "https://my.home-assistant.io/redirect/oauth"
+    auth_url = oauth.get_authorization_url()
+    assert "https%3A%2F%2Fmy.home-assistant.io%2Fredirect%2Foauth" in auth_url
+
+
+# ---------------------------------------------------------------------------
+# Test 3: Private storage & authenticated view
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_food_circle_view_properties_and_serving():
+    """Verify FamilyHubFoodCircleView properties, access controls, and path safety."""
+    temp_dir = tempfile.mkdtemp()
+    try:
+        # Create a sample image file in protected storage
+        img_file = os.path.join(temp_dir, "test_crop_12345678.jpg")
+        with open(img_file, "wb") as f:
+            f.write(b"fake_jpeg_content")
+
+        view = FamilyHubFoodCircleView(temp_dir)
+        assert view.url == "/api/samsung_familyhub/food_circles/{filename}"
+        assert view.name == "api:samsung_familyhub:food_circles"
+        assert view.requires_auth is True
+
+        # Valid request
+        req = MagicMock()
+        resp = await view.get(req, "test_crop_12345678.jpg")
+        assert resp.path == img_file
+
+        # Nonexistent file -> 404
+        resp_404 = await view.get(req, "missing.jpg")
+        assert resp_404.status == 404
+
+        # Directory traversal attempts -> 400
+        for bad_filename in ["../secret.txt", "..\\secret.txt", "sub/file.jpg", "/etc/passwd"]:
+            resp_bad = await view.get(req, bad_filename)
+            assert resp_bad.status == 400
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_legacy_www_food_circles_migrated_to_storage():
+    """Verify setup migrates any images from www/ to .storage/ and cleans up www/."""
+    temp_ha_dir = tempfile.mkdtemp()
+    try:
+        www_dir = os.path.join(temp_ha_dir, "www", "samsung_familyhub", "food_circles")
+        os.makedirs(www_dir, exist_ok=True)
+        old_file = os.path.join(www_dir, "item1_hash1234.jpg")
+        with open(old_file, "wb") as f:
+            f.write(b"migrated_content")
+
+        storage_dir = os.path.join(temp_ha_dir, ".storage", "samsung_familyhub", "food_circles")
+
+        hass = _HomeAssistant()
+        hass.config.path = MagicMock(side_effect=lambda p: os.path.join(temp_ha_dir, p))
+        hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+
+        entry = _ConfigEntry(
+            entry_id="pat-entry",
+            data={
+                CONF_AUTH_MODE: AUTH_MODE_PAT,
+                CONF_TOKEN: "valid-pat-token",
+                CONF_DEVICE_ID: "dev-123",
+            },
+        )
+
+        with patch("custom_components.samsung_familyhub_fridge.FamilyHub") as mock_hub_cls:
+            mock_hub = MagicMock()
+            mock_hub.token = "valid-pat-token"
+            mock_hub_cls.return_value = mock_hub
+            await async_setup_entry(hass, entry)
+
+        # Verify old file moved to storage
+        new_file = os.path.join(storage_dir, "item1_hash1234.jpg")
+        assert os.path.exists(new_file)
+        with open(new_file, "rb") as f:
+            assert f.read() == b"migrated_content"
+
+        # Verify old www dir was deleted
+        assert not os.path.exists(www_dir)
+
+        # Verify HTTP view was registered
+        assert hass.http.register_view.called
+    finally:
+        shutil.rmtree(temp_ha_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Test 4: Missing import json fixed in api.py
+# ---------------------------------------------------------------------------
+
+def test_api_module_has_json_imported():
+    """Verify api.py has json imported in its global namespace."""
+    assert hasattr(api_module, "json")
+    assert api_module.json is not None
+
+
+# ---------------------------------------------------------------------------
+# Test 5: LastUpdatedAt timestamp sensor
+# ---------------------------------------------------------------------------
+
+def test_last_updated_at_sensor_native_value_and_metadata():
+    """Verify LastUpdatedAt sensor has TIMESTAMP device class, unique_id, and datetime native_value."""
+    coordinator = MagicMock()
+    coordinator.last_updated_at = 1729350000.0  # Unix timestamp
+    coordinator.api = MagicMock()
+    coordinator.api.device_id = "fridge-device-42"
+
+    sensor = LastUpdatedAt(coordinator, "fridge-device-42")
+
+    # Metadata assertions
+    assert sensor._attr_device_class == "timestamp"
+    assert sensor._attr_unique_id == "fridge-device-42_last_updated_at"
+    assert sensor._attr_name == "Last Updated At"
+
+    # Value assertion
+    val = sensor.native_value
+    assert isinstance(val, datetime)
+    assert val.tzinfo == timezone.utc
+    assert val.timestamp() == 1729350000.0
+
+    # None timestamp assertion
+    coordinator.last_updated_at = None
+    assert sensor.native_value is None
+
+    # Zero timestamp assertion
+    coordinator.last_updated_at = 0
+    assert sensor.native_value is None

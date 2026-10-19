@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import json
 import asyncio
 import hashlib
 import re
@@ -815,7 +816,9 @@ class SamsungFoodClient:
     def _load_cached_inventory_from_disk(self) -> None:
         """Attempt to restore cached inventory from disk on startup."""
         try:
-            cache_file = self.hass.config.path("www/samsung_familyhub/food_circles/inventory.json")
+            cache_file = self.hass.config.path(".storage/samsung_familyhub/food_circles/inventory.json")
+            if not os.path.exists(cache_file):
+                cache_file = self.hass.config.path("www/samsung_familyhub/food_circles/inventory.json")
             if os.path.exists(cache_file):
                 with open(cache_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -1158,8 +1161,8 @@ class SamsungFoodClient:
                     items = payload.get("foodData", {}).get("items", [])
                     stock_map = self._get_whisk_stock_map(session)
 
-                    # Local image cache directory inside Home Assistant's public /local/ folder
-                    cache_dir = self.hass.config.path("www/samsung_familyhub/food_circles")
+                    # Local image cache directory inside Home Assistant's protected .storage folder
+                    cache_dir = self.hass.config.path(".storage/samsung_familyhub/food_circles")
                     try:
                         os.makedirs(cache_dir, exist_ok=True)
                     except Exception as dir_err:
@@ -1197,7 +1200,17 @@ class SamsungFoodClient:
                                     _LOGGER.debug("Could not cache image for %s: %s", name, dl_err)
 
                             if os.path.exists(dest_file) and os.path.getsize(dest_file) > 0:
-                                final_url = f"/local/samsung_familyhub/food_circles/{filename}"
+                                url_path = f"/api/samsung_familyhub/food_circles/{filename}"
+                                final_url = url_path
+                                try:
+                                    from homeassistant.components.http.auth import async_sign_path
+                                    final_url = async_sign_path(self.hass, url_path, timedelta(days=7))
+                                except Exception:
+                                    if hasattr(self.hass, "http") and hasattr(self.hass.http, "async_sign_path"):
+                                        try:
+                                            final_url = self.hass.http.async_sign_path(url_path, timedelta(days=7))
+                                        except Exception:
+                                            final_url = url_path
 
                         raw_ts = (
                             content.get("addedAt")
