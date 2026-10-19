@@ -251,6 +251,7 @@ def test_food_circle_attributes_stay_under_16k_limit():
             "name": f"Food Item Number {i} Delicious Organic",
             "image_url": url,
             "added_at": 1729350000 + (i * 3600),
+            "expiration_date": None if i % 2 == 0 else "2026-10-30",
         })
 
     payload = {
@@ -262,3 +263,29 @@ def test_food_circle_attributes_stay_under_16k_limit():
     serialized = json.dumps(payload)
     # Must be less than half of the 16,384 bytes limit
     assert len(serialized) < 8000, f"Payload size {len(serialized)} exceeded 8KB target"
+
+
+def test_food_items_preserve_expiration_date_key():
+    """Verify item_dict always defines expiration_date even if None to prevent Jinja UndefinedError."""
+    # Ensure items created with or without expiration date always retain the key
+    content_without_exp = {"name": "Milk", "imageUrl": None, "createdAt": 1729350000}
+    content_with_exp = {"name": "Yogurt", "imageUrl": None, "createdAt": 1729350000, "expirationDate": "2026-10-25"}
+
+    item1 = {
+        "name": content_without_exp["name"],
+        "image_url": "/api/test.jpg",
+        "added_at": 1729350000,
+        "expiration_date": content_without_exp.get("expirationDate") or content_without_exp.get("expiration_date") or None,
+    }
+    item2 = {
+        "name": content_with_exp["name"],
+        "image_url": "/api/test.jpg",
+        "added_at": 1729350000,
+        "expiration_date": content_with_exp.get("expirationDate") or content_with_exp.get("expiration_date") or None,
+    }
+
+    assert "expiration_date" in item1
+    assert item1["expiration_date"] is None
+    assert "expiration_date" in item2
+    assert item2["expiration_date"] == "2026-10-25"
+

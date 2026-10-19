@@ -1222,10 +1222,8 @@ class SamsungFoodClient:
                             "name": name,
                             "image_url": final_url,
                             "added_at": sec_ts,
+                            "expiration_date": content.get("expirationDate") or content.get("expiration_date") or None,
                         }
-                        exp_date = content.get("expirationDate") or content.get("expiration_date")
-                        if exp_date:
-                            item_dict["expiration_date"] = exp_date
                         active_items.append(item_dict)
 
                     # Prune obsolete/consumed food circle images from previous syncs
