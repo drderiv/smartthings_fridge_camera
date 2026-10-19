@@ -1,9 +1,6 @@
 {
   "domain": "samsung_familyhub_fridge",
   "name": "Samsung FamilyHub Fridge & AI Food Manager",
-  "dependencies": [
-    "http"
-  ],
   "codeowners": [
     "@drderiv",
     "@TryTryAgain",
@@ -11,6 +8,9 @@
     "@nachtschatt3n"
   ],
   "config_flow": true,
+  "dependencies": [
+    "http"
+  ],
   "documentation": "https://github.com/drderiv/smartthings_fridge_camera",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
