@@ -234,23 +234,59 @@ class _ConfigEntry:
         pass
 
 
-class _ConfigEntryAuthFailed(Exception):
-    pass
-
-
 class _HomeAssistantError(Exception):
+    """Accepts Home Assistant's translation keyword arguments."""
+
+    def __init__(self, *args, translation_domain=None, translation_key=None, translation_placeholders=None):
+        super().__init__(*args)
+        self.translation_domain = translation_domain
+        self.translation_key = translation_key
+        self.translation_placeholders = translation_placeholders
+
+
+class _ConfigEntryAuthFailed(_HomeAssistantError):
     pass
+
+
+class _ServiceValidationError(_HomeAssistantError):
+    pass
+
+
+class _UpdateFailed(_HomeAssistantError):
+    pass
+
+
+class _DeviceInfo(dict):
+    def __init__(self, **kwargs):
+        super().__init__(kwargs)
 
 
 class _DataUpdateCoordinator:
     """Minimal stub of DataUpdateCoordinator."""
 
-    def __init__(self, hass, logger, *, name, update_interval):
+    def __init__(self, hass, logger, *, name, update_interval, config_entry=None):
         self.hass = hass
         self.logger = logger
         self.name = name
         self.update_interval = update_interval
+        self.config_entry = config_entry
         self.data = None
+        self.last_update_success = True
+
+    def __class_getitem__(cls, item):
+        return cls
+
+    async def async_config_entry_first_refresh(self):
+        await self._async_update_data()
+
+    async def async_refresh(self):
+        await self._async_update_data()
+
+    async def async_request_refresh(self):
+        await self._async_update_data()
+
+    async def async_shutdown(self):
+        pass
 
 
 class _CoordinatorEntity:
@@ -272,6 +308,18 @@ class _SensorDeviceClass:
 class _Camera:
     def __init__(self):
         pass
+
+    @property
+    def unique_id(self):
+        return getattr(self, "_attr_unique_id", None)
+
+    @property
+    def name(self):
+        return getattr(self, "_attr_name", None)
+
+    @property
+    def entity_registry_enabled_default(self):
+        return getattr(self, "_attr_entity_registry_enabled_default", True)
 
 
 class _UpdateEntity:
@@ -363,7 +411,7 @@ ha_const = _make_module(
     Platform=_Platform,
     HTTP_DIGEST_AUTHENTICATION="digest",
 )
-class _ConfigEntryNotReady(Exception):
+class _ConfigEntryNotReady(_HomeAssistantError):
     """Stub: HA raises this to defer entry setup."""
 
 
@@ -372,6 +420,7 @@ ha_exceptions = _make_module(
     ConfigEntryAuthFailed=_ConfigEntryAuthFailed,
     ConfigEntryNotReady=_ConfigEntryNotReady,
     HomeAssistantError=_HomeAssistantError,
+    ServiceValidationError=_ServiceValidationError,
 )
 ha_data_entry_flow = _make_module(
     "homeassistant.data_entry_flow",
@@ -384,7 +433,7 @@ ha_helpers_update_coordinator = _make_module(
     "homeassistant.helpers.update_coordinator",
     DataUpdateCoordinator=_DataUpdateCoordinator,
     CoordinatorEntity=_CoordinatorEntity,
-    UpdateFailed=Exception,
+    UpdateFailed=_UpdateFailed,
 )
 class _Store:
     """Minimal in-memory stand-in for homeassistant.helpers.storage.Store."""
@@ -400,6 +449,20 @@ class _Store:
 
 
 ha_helpers_storage = _make_module("homeassistant.helpers.storage", Store=_Store)
+ha_helpers_device_registry = _make_module("homeassistant.helpers.device_registry", DeviceInfo=_DeviceInfo)
+ha_components_diagnostics = _make_module(
+    "homeassistant.components.diagnostics",
+    async_redact_data=lambda data, to_redact: {
+        k: ("**REDACTED**" if k in to_redact else (ha_redact_nested(v, to_redact) if isinstance(v, dict) else v))
+        for k, v in data.items()
+    },
+)
+
+
+def ha_redact_nested(data, to_redact):
+    return ha_components_diagnostics.async_redact_data(data, to_redact)
+
+
 ha_helpers_entity_platform = _make_module(
     "homeassistant.helpers.entity_platform",
     AddEntitiesCallback=MagicMock,
@@ -530,6 +593,8 @@ _modules = {
     "homeassistant.helpers": ha_helpers,
     "homeassistant.helpers.update_coordinator": ha_helpers_update_coordinator,
     "homeassistant.helpers.storage": ha_helpers_storage,
+    "homeassistant.helpers.device_registry": ha_helpers_device_registry,
+    "homeassistant.components.diagnostics": ha_components_diagnostics,
     "homeassistant.helpers.entity_platform": ha_helpers_entity_platform,
     "homeassistant.helpers.dispatcher": ha_helpers_dispatcher,
     "homeassistant.helpers.typing": ha_helpers_typing,

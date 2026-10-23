@@ -8,7 +8,6 @@ DEFAULT_TIMEOUT = 10
 CONF_AUTH_MODE = "auth_mode"
 CONF_TOKEN = "token"
 CONF_DEVICE_ID = "device_id"
-CONF_LINKED_SMARTTHINGS_ENTRY_ID = "linked_smartthings_entry_id"
 CONF_SAMSUNG_IOT_REFRESH_TOKEN = "samsung_iot_refresh_token"
 CONF_SAMSUNG_IOT_AUTH_SERVER = "samsung_iot_auth_server"
 
@@ -41,6 +40,7 @@ CONF_LOCATION_ID = "location_id"
 CONF_ROTATOR_URL = "rotator_url"
 CONF_ROTATOR_API_KEY = "rotator_api_key"
 DEFAULT_ROTATOR_URL = "http://127.0.0.1:8765"
+ROTATOR_TIMEOUT = 2  # seconds; the rotator is a local/VPN service
 CONF_FOOD_UPDATE_INTERVAL = "food_update_interval"
 CONF_POLL_INTERVAL = "poll_interval"
 DEFAULT_POLL_INTERVAL = 60  # seconds between SmartThings status polls

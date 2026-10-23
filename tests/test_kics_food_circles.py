@@ -11,7 +11,20 @@ from custom_components.samsung_familyhub_fridge.const import (
     KICS_CLIENT_ID,
     KICS_SA_AUTH_URL,
 )
-from custom_components.samsung_familyhub_fridge.api import SamsungFoodClient
+from custom_components.samsung_familyhub_fridge.food import SamsungFoodClient
+from custom_components.samsung_familyhub_fridge.rotator import RotatorClient, resolve_rotator_url
+
+
+ROTATOR_URL = "http://127.0.0.1:8765"
+
+
+def make_client(hass, tmp_path=None, **kwargs):
+    """A food client with a local cache dir and a rotator at the default URL."""
+    import tempfile
+    from pathlib import Path
+
+    cache_dir = Path(tmp_path) if tmp_path else Path(tempfile.mkdtemp())
+    return SamsungFoodClient(hass, RotatorClient(ROTATOR_URL), cache_dir=cache_dir, **kwargs)
 
 
 @pytest.fixture
@@ -24,7 +37,7 @@ def mock_hass():
 
 def test_samsung_food_client_fetches_kics_food_circles(mock_hass):
     """Test SamsungFoodClient retrieves live circular crops from KICS EPA endpoint."""
-    client = SamsungFoodClient(
+    client = make_client(
         mock_hass,
         token="test_26_char_kics_token_abc",
         location_id="test-loc-1234",
@@ -54,6 +67,7 @@ def test_samsung_food_client_fetches_kics_food_circles(mock_hass):
     }
 
     with requests_mock.Mocker() as m:
+        m.get(requests_mock.ANY, status_code=404)  # image downloads / rotator: unavailable
         m.get(KICS_FOODLIST_ENDPOINT, json=kics_payload, status_code=200)
 
         result = client._fetch_food_items_sync("test_26_char_kics_token_abc")
@@ -76,7 +90,7 @@ def test_samsung_food_client_fetches_kics_food_circles(mock_hass):
 def test_samsung_food_client_falls_back_to_whisk_on_kics_failure(mock_hass):
     """Test that client falls back to Whisk API if KICS EPA returns an error."""
     long_whisk_token = "test_whisk_token_long_enough_to_be_whisk_api_token"
-    client = SamsungFoodClient(
+    client = make_client(
         mock_hass,
         token=long_whisk_token,
         location_id="test-loc-1234",
@@ -110,7 +124,7 @@ def test_samsung_food_client_falls_back_to_whisk_on_kics_failure(mock_hass):
 
 def test_samsung_food_client_falls_back_to_stock_photo_when_circle_missing(mock_hass):
     """Test that client falls back to Whisk stock photo if live camera circle is missing."""
-    client = SamsungFoodClient(
+    client = make_client(
         mock_hass,
         token="test_kics_token",
         location_id="test-loc-1234",
@@ -143,6 +157,7 @@ def test_samsung_food_client_falls_back_to_stock_photo_when_circle_missing(mock_
     }
 
     with requests_mock.Mocker() as m:
+        m.get("https://whisk.com/yogurt_stock.jpg", status_code=404)  # cache download fails -> keep remote URL
         m.get(KICS_FOODLIST_ENDPOINT, json=kics_payload, status_code=200)
         m.get("http://127.0.0.1:8765/food_token", json={"token": "mock_whisk_token_for_stock_photos_12345"}, status_code=200)
         m.get("https://api.whisk.com/foodlist/v2", json=whisk_payload, status_code=200)
@@ -209,22 +224,20 @@ def test_rotate_kics_token_writes_files(tmp_path):
         assert ref_file.read_text().strip() == "next_rolling_refresh_token_888"
 
 
-def test_resolve_rotator_base_url_hierarchy(mock_hass):
-    """Test resolution order of rotator base URL (entry options, then default)."""
-    from custom_components.samsung_familyhub_fridge.const import (
-        DEFAULT_ROTATOR_URL,
-        CONF_ROTATOR_URL,
-    )
-    # 1. Fallback to default
-    client = SamsungFoodClient(mock_hass)
-    assert client._resolve_rotator_base_url() == DEFAULT_ROTATOR_URL
+def test_resolve_rotator_url_hierarchy(monkeypatch):
+    """Entry options/data win, then PAT_ROTATOR_URL, then the default."""
+    from custom_components.samsung_familyhub_fridge.const import DEFAULT_ROTATOR_URL, CONF_ROTATOR_URL
 
-    # 2. Entry options override
-    mock_entry = MagicMock()
-    mock_entry.options = {CONF_ROTATOR_URL: "http://remote-host:9999/"}
-    mock_entry.data = {}
-    client_with_entry = SamsungFoodClient(mock_hass, config_entry=mock_entry)
-    assert client_with_entry._resolve_rotator_base_url() == "http://remote-host:9999"
+    monkeypatch.delenv("PAT_ROTATOR_URL", raising=False)
+    assert resolve_rotator_url(None) == DEFAULT_ROTATOR_URL
+
+    monkeypatch.setenv("PAT_ROTATOR_URL", "http://env-host:1111/")
+    assert resolve_rotator_url(None) == "http://env-host:1111"
+
+    entry = MagicMock()
+    entry.options = {CONF_ROTATOR_URL: "http://remote-host:9999/"}
+    entry.data = {}
+    assert resolve_rotator_url(entry) == "http://remote-host:9999"
 
 
 @pytest.mark.asyncio
@@ -268,75 +281,82 @@ async def test_options_flow_renders_and_saves():
     assert save_result["data"][CONF_FOOD_UPDATE_INTERVAL] == 300
 
 
-@pytest.mark.asyncio
-async def test_data_coordinator_direct_rotator_pat_fetch(mock_hass):
-    """Test DataCoordinator automatically fetches fresh PAT directly from rotator REST server."""
-    from custom_components.samsung_familyhub_fridge.api import DataCoordinator, FamilyHub
+def _pat_coordinator(mock_hass, token):
+    from custom_components.samsung_familyhub_fridge.api import FamilyHub
+    from custom_components.samsung_familyhub_fridge.coordinator import FridgeCoordinator
 
     async def _mock_run(func, *args):
         return func(*args)
+
     mock_hass.async_add_executor_job = AsyncMock(side_effect=_mock_run)
-
-    api = FamilyHub(mock_hass, token="old_token_123", device_id="test_device_id")
+    api = FamilyHub(token=token, device_id="test_device_id")
     api.async_ensure_fresh_token = AsyncMock()
-    api.get_all_device_status = MagicMock(return_value={"components": {}})
-    api.set_device_status = MagicMock()
-    api.should_update = False
-    api.get_file_ids = MagicMock(return_value=["file1"])
-    api.download_images = MagicMock(return_value=True)
-
-    mock_entry = MagicMock()
-    mock_entry.options = {}
-    mock_entry.data = {"token": "old_token_123"}
-    mock_entry.entry_id = "test_entry_id"
-    mock_hass.config_entries.async_entries.return_value = [mock_entry]
-
-    coordinator = DataCoordinator(mock_hass, api)
-
-    with requests_mock.Mocker() as m:
-        m.get("http://127.0.0.1:8765/pat", json={"token": "fresh_rotator_pat_999"}, status_code=200)
-        await coordinator._async_update_data()
-
-        assert api.token == "fresh_rotator_pat_999"
-        mock_hass.config_entries.async_update_entry.assert_called_with(
-            mock_entry, data={"token": "fresh_rotator_pat_999"}
-        )
+    api.get_current_device_status = MagicMock(return_value={})
+    api.set_current_device_status = MagicMock()
+    api.extract_device_data = MagicMock()
+    api.get_file_ids = MagicMock(return_value=[])
+    entry = MagicMock()
+    entry.options = {}
+    entry.data = {"token": token}
+    coordinator = FridgeCoordinator(mock_hass, entry, api, rotator=RotatorClient(ROTATOR_URL))
+    return coordinator, api, entry
 
 
 @pytest.mark.asyncio
-async def test_data_coordinator_rotator_pat_fetch_throttling(mock_hass):
-    """Test DataCoordinator throttles PAT requests to avoid flooding the rotator server."""
-    from custom_components.samsung_familyhub_fridge.api import DataCoordinator, FamilyHub
-
-    async def _mock_run(func, *args):
-        return func(*args)
-    mock_hass.async_add_executor_job = AsyncMock(side_effect=_mock_run)
-
-    api = FamilyHub(mock_hass, token="current_token", device_id="test_device_id")
-    api.async_ensure_fresh_token = AsyncMock()
-    api.get_all_device_status = MagicMock(return_value={"components": {}})
-    api.set_device_status = MagicMock()
-    api.should_update = False
-    api.get_file_ids = MagicMock(return_value=["file1"])
-    api.download_images = MagicMock(return_value=True)
-
-    coordinator = DataCoordinator(mock_hass, api)
+async def test_coordinator_picks_up_rotated_pat_from_rotator(mock_hass):
+    """A new PAT from the rotator replaces the old one and is saved in the config entry."""
+    coordinator, api, entry = _pat_coordinator(mock_hass, "old_token_123")
 
     with requests_mock.Mocker() as m:
-        pat_mock = m.get("http://127.0.0.1:8765/pat", json={"token": "current_token"}, status_code=200)
-
-        # 1. First update queries the rotator
+        m.get(f"{ROTATOR_URL}/pat", json={"token": "fresh_rotator_pat_999"}, status_code=200)
         await coordinator._async_update_data()
+
+    assert api.token == "fresh_rotator_pat_999"
+    mock_hass.config_entries.async_update_entry.assert_called_with(
+        entry, data={"token": "fresh_rotator_pat_999"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_coordinator_rotator_pat_fetch_throttling(mock_hass):
+    """The rotator is only asked again when the scheduled rotation time is reached."""
+    coordinator, api, _entry = _pat_coordinator(mock_hass, "current_token")
+
+    with requests_mock.Mocker() as m:
+        pat_mock = m.get(f"{ROTATOR_URL}/pat", json={"token": "current_token"}, status_code=200)
+
+        await coordinator._async_update_data()          # first update queries the rotator
         assert pat_mock.call_count == 1
 
-        # 2. Immediate second update (e.g. 10s door polling) is throttled and does not query
-        await coordinator._async_update_data()
+        await coordinator._async_update_data()          # immediately after: throttled
         assert pat_mock.call_count == 1
 
-        # 3. Simulate elapsed validity window / scheduled rotation reached
-        coordinator._pat_expires_at = time.time() - 10
+        coordinator._pat_expires_at = time.time() - 10  # scheduled rotation reached
         await coordinator._async_update_data()
         assert pat_mock.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_coordinator_retries_with_newer_pat_after_auth_error(mock_hass):
+    """On 401 the coordinator asks the rotator once for a newer PAT and retries."""
+    from custom_components.samsung_familyhub_fridge.api import AuthenticationError
+
+    coordinator, api, _entry = _pat_coordinator(mock_hass, "stale_token")
+    coordinator._pat_expires_at = time.time() + 3600       # rotator not due: only the recovery asks
+    calls = {"n": 0}
+
+    def status():
+        calls["n"] += 1
+        if api.token == "stale_token":
+            raise AuthenticationError("401")
+        return {}
+
+    api.get_current_device_status = MagicMock(side_effect=status)
+    with requests_mock.Mocker() as m:
+        m.get(f"{ROTATOR_URL}/pat", json={"token": "new_token"}, status_code=200)
+        await coordinator._async_update_data()
+
+    assert api.token == "new_token" and calls["n"] == 2
 
 
 @pytest.mark.asyncio
@@ -346,7 +366,7 @@ async def test_samsung_food_client_token_caching_and_ttl(mock_hass):
         return func(*args)
     mock_hass.async_add_executor_job = AsyncMock(side_effect=_mock_run)
 
-    client = SamsungFoodClient(mock_hass, rotator_url="http://127.0.0.1:8765")
+    client = make_client(mock_hass)
 
     with requests_mock.Mocker() as m:
         future_ts = int(time.time() + 82800)

@@ -24,7 +24,7 @@ def hass():
 
 @pytest.fixture
 def hub(hass):
-    hub = FamilyHub(hass, token="test-token", device_id="device-123")
+    hub = FamilyHub(token="test-token", device_id="device-123")
     hub._current_device_status = {
         "samsungce.viewInside": {
             "contents": {"value": [{"fileId": "file-abc"}]}

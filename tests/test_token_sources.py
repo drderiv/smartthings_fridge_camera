@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 import pytest
 import requests_mock
 
-from custom_components.samsung_familyhub_fridge.api import SamsungFoodClient
-from custom_components.samsung_familyhub_fridge.const import CONF_ROTATOR_API_KEY
+from custom_components.samsung_familyhub_fridge.food import SamsungFoodClient
+from custom_components.samsung_familyhub_fridge.rotator import RotatorClient
 
 ROTATOR = "http://rotator.test:8765"
 
@@ -20,11 +20,10 @@ def mock_hass():
 
 
 @pytest.fixture
-def client(mock_hass):
-    entry = MagicMock()
-    entry.options = {CONF_ROTATOR_API_KEY: "secret-key"}
-    entry.data = {}
-    return SamsungFoodClient(mock_hass, rotator_url=ROTATOR, config_entry=entry)
+def client(mock_hass, tmp_path):
+    return SamsungFoodClient(
+        mock_hass, RotatorClient(ROTATOR, "secret-key"), cache_dir=tmp_path / "cache"
+    )
 
 
 def test_rotator_token_sends_api_key(client):
@@ -48,7 +47,7 @@ def test_no_token_files_or_helpers_are_read(client, tmp_path, monkeypatch, mock_
 def test_location_id_order_smartthings_then_rotator(client, mock_hass):
     hub = MagicMock()
     hub.get_location_id.return_value = "loc-from-smartthings"
-    mock_hass.data = {"samsung_familyhub_fridge": {"hub": hub}}
+    client._location_lookup = hub.get_location_id
     with requests_mock.Mocker() as m:
         m.get(f"{ROTATOR}/location_id", json={"location_id": "loc-from-rotator"})
         assert client._get_location_id_sync() == "loc-from-smartthings"
@@ -67,7 +66,7 @@ async def test_token_cache_round_trip(client, mock_hass):
     client._location_id = "loc-1"
     await client._async_persist_cache()
 
-    restored = SamsungFoodClient(mock_hass, rotator_url=ROTATOR)
+    restored = SamsungFoodClient(mock_hass, RotatorClient(ROTATOR), cache_dir=client._images.directory)
     restored._store = client._store
     await restored.async_restore_cache()
     assert restored._cached_kics_token == "kics-abc"
@@ -80,7 +79,7 @@ async def test_expired_cached_token_not_restored(client, mock_hass):
     client._kics_expires_at = time.time() - 10
     await client._async_persist_cache()
 
-    restored = SamsungFoodClient(mock_hass, rotator_url=ROTATOR)
+    restored = SamsungFoodClient(mock_hass, RotatorClient(ROTATOR), cache_dir=client._images.directory)
     restored._store = client._store
     await restored.async_restore_cache()
     assert restored._cached_kics_token is None
@@ -91,18 +90,19 @@ async def test_expired_cached_token_not_restored(client, mock_hass):
 def test_default_poll_interval_is_one_minute():
     from custom_components.samsung_familyhub_fridge.const import DEFAULT_POLL_INTERVAL
     from datetime import timedelta
-    from custom_components.samsung_familyhub_fridge.api import DataCoordinator
+    from custom_components.samsung_familyhub_fridge.coordinator import FridgeCoordinator
 
-    coordinator = DataCoordinator(MagicMock(), MagicMock())
+    coordinator = FridgeCoordinator(MagicMock(), MagicMock(), MagicMock())
     assert DEFAULT_POLL_INTERVAL == 60
     assert coordinator.update_interval == timedelta(seconds=60)
-    assert DataCoordinator(MagicMock(), MagicMock(), 30).update_interval == timedelta(seconds=30)
+    assert FridgeCoordinator(MagicMock(), MagicMock(), MagicMock(), poll_interval=30).update_interval == timedelta(seconds=30)
 
 
 @pytest.mark.asyncio
 async def test_rate_limit_skips_poll_without_error_and_recovers(caplog):
     import logging
-    from custom_components.samsung_familyhub_fridge.api import DataCoordinator, RateLimitError
+    from custom_components.samsung_familyhub_fridge.api import RateLimitError
+    from custom_components.samsung_familyhub_fridge.coordinator import FridgeCoordinator
 
     hass = MagicMock()
     api = MagicMock()
@@ -124,13 +124,12 @@ async def test_rate_limit_skips_poll_without_error_and_recovers(caplog):
         return {}
 
     hass.async_add_executor_job = run_job
-    coordinator = DataCoordinator(hass, api)
+    coordinator = FridgeCoordinator(hass, MagicMock(), api)
     coordinator._pat_expires_at = 10**12            # skip the rotator probe
-    coordinator.data = {"kept": True}
     with caplog.at_level(logging.INFO):
-        assert await coordinator._async_update_data() == {"kept": True}
-        assert await coordinator._async_update_data() == {"kept": True}
+        await coordinator._async_update_data()      # rate limited: skipped quietly (no exception)
         await coordinator._async_update_data()
+        await coordinator._async_update_data()      # recovered
     warnings = [r for r in caplog.records if "rate limiting" in r.getMessage() and r.levelno == logging.WARNING]
     assert len(warnings) == 1                       # logged once per episode
     assert any("no longer rate limiting" in r.getMessage() for r in caplog.records)

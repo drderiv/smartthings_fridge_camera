@@ -1,5 +1,6 @@
 """Tests for Samsung FamilyHub fridge camera entities."""
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from custom_components.samsung_familyhub_fridge.camera import (
@@ -26,11 +27,12 @@ async def test_camera_setup_default_two_cameras(mock_hass):
     mock_hub = MagicMock()
     mock_hub.device_id = "test_fridge_123"
     mock_hub.downloaded_images = [b"img0", b"img1", None]
-    mock_hass.data[DOMAIN] = {"hub": mock_hub}
+    mock_hass.data[DOMAIN] = {}
 
     mock_entry = MagicMock()
     mock_entry.data = {CONF_DEVICE_ID: "test_fridge_123"}
     mock_entry.options = {}
+    mock_entry.runtime_data = SimpleNamespace(coordinator=SimpleNamespace(hub=mock_hub))
 
     added_entities = []
 
@@ -64,11 +66,12 @@ async def test_camera_setup_with_bottom_camera_enabled(mock_hass):
     mock_hub = MagicMock()
     mock_hub.device_id = "test_fridge_123"
     mock_hub.downloaded_images = [b"img0", b"img1", b"img2"]
-    mock_hass.data[DOMAIN] = {"hub": mock_hub}
+    mock_hass.data[DOMAIN] = {}
 
     mock_entry = MagicMock()
     mock_entry.data = {CONF_DEVICE_ID: "test_fridge_123"}
     mock_entry.options = {CONF_ENABLE_BOTTOM_CAMERA: True}
+    mock_entry.runtime_data = SimpleNamespace(coordinator=SimpleNamespace(hub=mock_hub))
 
     added_entities = []
 

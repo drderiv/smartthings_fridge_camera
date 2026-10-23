@@ -6,11 +6,14 @@ import requests_mock as rm
 # conftest installs HA stubs before any component imports
 from tests.conftest import _HomeAssistant, _ConfigEntryAuthFailed
 
-from custom_components.samsung_familyhub_fridge.api import (
-    AuthenticationError,
-    DataCoordinator,
-    FamilyHub,
-)
+from unittest.mock import MagicMock
+
+from custom_components.samsung_familyhub_fridge.api import AuthenticationError, FamilyHub
+from custom_components.samsung_familyhub_fridge.coordinator import FridgeCoordinator
+
+
+def make_coordinator(hass, hub):
+    return FridgeCoordinator(hass, MagicMock(), hub)
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +27,7 @@ def hass():
 
 @pytest.fixture
 def hub(hass):
-    return FamilyHub(hass, token="valid-token", device_id="device-123")
+    return FamilyHub(token="valid-token", device_id="device-123")
 
 
 DEVICE_STATUS_URL = "https://client.smartthings.com/devices/status"
@@ -264,7 +267,7 @@ class TestCoordinatorAuthPropagation:
 
     @pytest.mark.asyncio
     async def test_coordinator_raises_config_entry_auth_failed(self, hass, hub):
-        coordinator = DataCoordinator(hass, hub)
+        coordinator = make_coordinator(hass, hub)
         with rm.Mocker() as m:
             m.get(CURRENT_STATUS_URL, status_code=401)
             # Pre-set state so coordinator takes the "else" path (get_current_device_status)
@@ -282,17 +285,18 @@ class TestCoordinatorAuthPropagation:
 
     @pytest.mark.asyncio
     async def test_coordinator_raises_on_update_camera_auth_error(self, hass, hub):
-        coordinator = DataCoordinator(hass, hub)
+        coordinator = make_coordinator(hass, hub)
         hub._device_id = "device-123"
         hub.should_update = True
         with rm.Mocker() as m:
+            m.get(CURRENT_STATUS_URL, json={"contactSensor": {"contact": {"value": "open", "timestamp": "t"}}})
             m.post(COMMANDS_URL, status_code=403)
             with pytest.raises(_ConfigEntryAuthFailed):
                 await coordinator._async_update_data()
 
     @pytest.mark.asyncio
     async def test_coordinator_normal_flow_no_error(self, hass, hub):
-        coordinator = DataCoordinator(hass, hub)
+        coordinator = make_coordinator(hass, hub)
         hub._device_id = "device-123"
         hub.should_update = False
         hub._current_device_status = {
@@ -348,8 +352,8 @@ class TestFullAuthRefreshScenario:
 
     @pytest.mark.asyncio
     async def test_coordinator_recovers_after_token_update(self, hass):
-        hub = FamilyHub(hass, token="old-token", device_id="device-123")
-        coordinator = DataCoordinator(hass, hub)
+        hub = FamilyHub(token="old-token", device_id="device-123")
+        coordinator = make_coordinator(hass, hub)
         hub.should_update = False
         hub._current_device_status = {
             "samsungce.viewInside": {
@@ -423,7 +427,7 @@ class TestStatusErrorHandlingAndCoordinatorResilience:
     @pytest.mark.asyncio
     async def test_coordinator_continues_polling_on_repeated_download_failures(self, hass, hub):
         import re
-        coordinator = DataCoordinator(hass, hub)
+        coordinator = make_coordinator(hass, hub)
         hub.should_update = False
         hub._current_device_status = {
             "samsungce.viewInside": {
@@ -444,10 +448,10 @@ class TestStatusErrorHandlingAndCoordinatorResilience:
             # Poll 1-3: download fails, consecutive failures incremented
             for i in range(1, 4):
                 await coordinator._async_update_data()
-                assert coordinator._consecutive_download_failures == i
+                assert coordinator._download_failures == i
 
-            # On attempt 4, status polling is called alongside download retry
+            # Status is polled every cycle, so polling never stalls on a bad file ID
             await coordinator._async_update_data()
-            assert coordinator._consecutive_download_failures == 4
+            assert coordinator._download_failures == 4
             assert m.call_count >= 5
 

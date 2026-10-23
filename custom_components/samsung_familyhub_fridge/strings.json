@@ -5,7 +5,6 @@
         "title": "Choose authentication method",
         "description": "Samsung deprecated indefinite SmartThings Personal Access Tokens on 2024-12-30 — new PATs expire every 24 hours. Reusing the HA core SmartThings integration's OAuth2 credentials avoids this limit entirely.",
         "menu_options": {
-          "oauth": "Reuse HA core SmartThings OAuth (recommended)",
           "standalone_oauth": "Standalone SmartThings OAuth (custom app)",
           "pat": "Enter a Personal Access Token (legacy)"
         }
@@ -34,14 +33,6 @@
           "samsung_signin_client_secret": "Samsung signin client secret (optional)"
         }
       },
-      "oauth": {
-        "title": "Reuse SmartThings OAuth credentials",
-        "description": "Select an existing HA core SmartThings integration to borrow its OAuth2 credentials. Tokens will refresh automatically.",
-        "data": {
-          "linked_smartthings_entry_id": "SmartThings integration",
-          "device_id": "Device ID (optional)"
-        }
-      },
       "pat": {
         "title": "SmartThings Personal Access Token",
         "description": "Tokens created after 2024-12-30 expire every 24 hours. You will need to reauthenticate after each expiry.",
@@ -55,6 +46,21 @@
         "description": "Your SmartThings token has expired. Please enter a new Personal Access Token.",
         "data": {
           "token": "New SmartThings Token"
+        }
+      },
+      "reauth_standalone_oauth": {
+        "title": "Re-authenticate SmartThings (Standalone OAuth)",
+        "description": "Enter your SmartThings app's client ID and secret.",
+        "data": {
+          "oauth_client_id": "Client ID",
+          "oauth_client_secret": "Client Secret"
+        }
+      },
+      "reauth_standalone_oauth_link": {
+        "title": "Authorize SmartThings",
+        "description": "Open this URL in a browser to authorize:\n\n`{authorization_url}`\n\nThen paste the full redirect URL or the authorization code below.",
+        "data": {
+          "redirect_url_or_code": "Redirect URL or authorization code"
         }
       }
     },
@@ -85,6 +91,57 @@
           "poll_interval": "Fridge status poll interval in seconds (10-3600, default 60)"
         }
       }
+    }
+  },
+  "services": {
+    "refresh": {
+      "name": "Refresh camera",
+      "description": "Ask the fridge to take new camera photos. Capture happens on door-close events; this sends the same command, and the result depends on the fridge's state and firmware.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Fridge",
+          "description": "Which fridge to refresh. Leave empty to refresh all."
+        }
+      }
+    },
+    "refresh_food_inventory": {
+      "name": "Refresh food inventory",
+      "description": "Immediately re-read the fridge's food inventory.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Fridge",
+          "description": "Which fridge to refresh. Leave empty to refresh all."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "auth_failed": {
+      "message": "SmartThings rejected the credentials. Re-authenticate the integration."
+    },
+    "cannot_connect": {
+      "message": "Could not reach SmartThings: {error}"
+    },
+    "rate_limited": {
+      "message": "SmartThings is rate limiting requests. Try again shortly."
+    },
+    "refresh_failed": {
+      "message": "The refresh command failed: {error}"
+    },
+    "no_loaded_entry": {
+      "message": "No loaded Samsung FamilyHub entry matches."
+    },
+    "no_food_inventory": {
+      "message": "The food inventory is not set up (no Samsung Food token was found)."
+    },
+    "no_token": {
+      "message": "This entry has no SmartThings token and the rotator did not provide one. Reconfigure the integration."
+    },
+    "missing_credentials": {
+      "message": "The Standalone OAuth entry is missing credentials. Reconfigure the integration."
+    },
+    "oauth_mode_removed": {
+      "message": "Borrowing the SmartThings integration's OAuth credentials is no longer supported. Reconfigure using Standalone OAuth or a Personal Access Token."
     }
   }
 }

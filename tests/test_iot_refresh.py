@@ -55,21 +55,13 @@ class TestIoTRefreshOnAuthFailure:
         self, requests_mock
     ):
         """401 on first IoT download → refresh → retry returns image → True."""
-        hass = _make_hass()
-        entry = _ConfigEntry(
-            entry_id="iot-refresh-test",
-            data={
-                CONF_SAMSUNG_IOT_REFRESH_TOKEN: "old-iot-refresh-token",
-                "samsung_iot_auth_server": "https://us-auth2.samsungosp.com",
-            },
-        )
-        hub = FamilyHub(hass, token="st-token", device_id=DEVICE_ID)
+        persisted = []
+        hub = FamilyHub(token="st-token", device_id=DEVICE_ID, on_iot_refresh_token=persisted.append)
         hub._current_device_status = DEVICE_STATUS
         hub.set_samsung_iot_token(
             "old-iot-access-token",
             refresh_token="old-iot-refresh-token",
             auth_server="https://us-auth2.samsungosp.com",
-            entry=entry,
         )
 
         url = _file_link_url()
@@ -97,27 +89,17 @@ class TestIoTRefreshOnAuthFailure:
         assert hub._samsung_iot_refresh_token == "new-iot-refresh-token", (
             "In-memory refresh token must be updated after successful refresh"
         )
-        # Config entry must be persisted with the new refresh token
-        hass.config_entries.async_update_entry.assert_called_once()
-        _, kwargs = hass.config_entries.async_update_entry.call_args
-        assert kwargs["data"][CONF_SAMSUNG_IOT_REFRESH_TOKEN] == "new-iot-refresh-token", (
-            "Config entry data must contain the rotated samsung_iot_refresh_token"
-        )
+        # The rotated refresh token is handed to the owner to persist (it may run in a worker thread)
+        assert persisted == ["new-iot-refresh-token"]
 
     def test_download_retries_after_400_no_samsung_id(self, requests_mock):
         """400 with 'No samsung id' triggers refresh and retry."""
-        hass = _make_hass()
-        entry = _ConfigEntry(
-            entry_id="iot-refresh-400",
-            data={CONF_SAMSUNG_IOT_REFRESH_TOKEN: "old-refresh"},
-        )
-        hub = FamilyHub(hass, token="st-token", device_id=DEVICE_ID)
+        hub = FamilyHub(token="st-token", device_id=DEVICE_ID)
         hub._current_device_status = DEVICE_STATUS
         hub.set_samsung_iot_token(
             "old-iot-token",
             refresh_token="old-refresh",
             auth_server="https://us-auth2.samsungosp.com",
-            entry=entry,
         )
 
         url = _file_link_url()
@@ -159,8 +141,7 @@ class TestIoTAuthFailureWithoutRefreshToken:
 
     def test_401_raises_auth_error_without_retry(self, requests_mock):
         """Without a refresh token, 401 raises AuthenticationError after one request."""
-        hass = _make_hass()
-        hub = FamilyHub(hass, token="st-token", device_id=DEVICE_ID)
+        hub = FamilyHub(token="st-token", device_id=DEVICE_ID)
         hub._current_device_status = DEVICE_STATUS
         # Set IoT token but NO refresh_token
         hub.set_samsung_iot_token("iot-access-only")

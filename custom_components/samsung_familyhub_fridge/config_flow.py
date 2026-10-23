@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import requests
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -12,7 +13,7 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_entry_oauth2_flow
 
-from .api import AuthenticationError, FamilyHub
+from .api import AuthenticationError, FamilyHub, RateLimitError
 from .auth import AuthError, SamsungAccountAuth, SmartThingsOAuth
 from .auth import SAMSUNG_LOGIN_CLIENT_ID
 from .const import (
@@ -56,13 +57,15 @@ STEP_PAT_DATA_SCHEMA = vol.Schema(
 
 async def _validate_pat(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
     """Validate a Personal Access Token and resolve the device ID."""
-    hub = FamilyHub(hass, data[CONF_TOKEN], data.get(CONF_DEVICE_ID))
+    hub = FamilyHub(data[CONF_TOKEN], data.get(CONF_DEVICE_ID))
 
     try:
-        if not await hub.authenticate():
-            raise InvalidAuth
+        status = await hass.async_add_executor_job(hub.get_all_device_status)
     except AuthenticationError as err:
         raise InvalidAuth from err
+    except (RateLimitError, requests.RequestException, ValueError) as err:
+        raise CannotConnect from err
+    hub.set_device_status(status)
 
     if not data.get(CONF_DEVICE_ID):
         data[CONF_DEVICE_ID] = hub.device_id
@@ -269,6 +272,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
+                if info.get(CONF_DEVICE_ID):
+                    await self.async_set_unique_id(info[CONF_DEVICE_ID])
+                    self._abort_if_unique_id_configured()
                 data = {**info, CONF_AUTH_MODE: AUTH_MODE_PAT}
                 return self.async_create_entry(
                     title="Samsung Fridge Camera", data=data

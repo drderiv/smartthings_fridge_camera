@@ -49,6 +49,23 @@ New (non-breaking): last-known KICS/Whisk tokens and the location ID are cached 
 - **SmartThings status is now polled every 60 seconds by default** (it used to be every 10 s, hard-coded). Set **Configure → Fridge status poll interval** (10–3600 s) to change it. A longer interval means door-close detection, and therefore the post-close camera refresh, can lag by up to that long.
 - **HTTP 429 (rate limited)** is handled quietly: the poll is skipped and one warning is logged per episode, instead of an error on every poll. Several Home Assistants sharing one token can trip the limit.
 
+## Integration — structure and behavior
+
+Entity IDs, entity names and unique IDs are **unchanged** (existing dashboards and automations keep working). Changes:
+
+- **Camera images appear within seconds of startup and about a minute after a door closes.** Each poll now reads the fridge status first, downloads images whenever their file IDs changed, and sends the camera-refresh command in the same pass. Before, those steps took turns across polls (two to three poll intervals), which got much slower once polling became 60 s.
+- **Setup waits for the first poll.** A bad token or unreachable SmartThings now makes the entry retry (or ask for re-authentication) instead of loading with nothing working. Failed polls make entities unavailable and are logged once, instead of being retried silently for ten polls.
+- **Polling no longer depends on the "Last Updated At" sensor.** The cameras are coordinator-driven too, so disabling that sensor no longer freezes the camera images. A camera is *unavailable* until its first image has been downloaded.
+- **Services** (`refresh`, `refresh_food_inventory`) are registered once for the integration (they used to be re-registered per entry and bound to the last-loaded fridge), accept an optional `config_entry_id`, and raise translated errors (`auth_failed`, `rate_limited`, `refresh_failed`, `no_food_inventory`, `no_loaded_entry`). Both services are now still available while no entry is loaded, but raise `no_loaded_entry`.
+- **Token updates no longer reload the integration.** Saving a rotated PAT or OAuth refresh token used to trigger a full reload (and, in Standalone OAuth mode, burn the single-use refresh token again). Only *option* changes reload now.
+- **Standalone OAuth: the access token renews itself** shortly before it expires. Previously it was refreshed only at startup, so it stopped working after about 24 hours and asked for re-authorization. The rotated refresh token is saved after every renewal, and a rejected refresh token starts re-authentication.
+- **Samsung IoT token refresh no longer touches the config entry from a worker thread.**
+- **Re-adding the same fridge is refused** (`already_configured`) when its device ID is known. New PAT entries now resolve and store the device ID during setup.
+- **Diagnostics** are available (token, OAuth credentials, rotator URL/key and IDs are redacted).
+- The food inventory sensor's `items` attribute is **no longer stored in the recorder database** (it is still in the live state, so templates and cards are unaffected).
+- The removed "borrowed SmartThings OAuth" mode is no longer offered in the setup menu or translations; existing entries using it show a re-authentication prompt.
+- Internals (only matters if you import them): `DataCoordinator` is now `coordinator.FridgeCoordinator`; `SamsungFoodClient`/`SamsungFoodCoordinator` moved to `food.py`; `FamilyHub` takes `(token, device_id)` with no `hass`; `hass.data[DOMAIN]["hub"]` is gone (use `entry.runtime_data`).
+
 ## Log hygiene
 
 - Debug-level details only: location IDs are no longer logged at INFO; response bodies are no longer included in warnings/exception messages.

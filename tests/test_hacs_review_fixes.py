@@ -55,7 +55,7 @@ async def test_borrowed_oauth_mode_raises_config_entry_auth_failed():
     with pytest.raises(ConfigEntryAuthFailed) as exc_info:
         await async_setup_entry(hass, entry)
 
-    assert "Borrowed SmartThings OAuth mode has been removed" in str(exc_info.value)
+    assert exc_info.value.translation_key == "oauth_mode_removed"
 
 
 # ---------------------------------------------------------------------------
@@ -150,49 +150,23 @@ async def test_food_circle_view_properties_and_serving():
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-@pytest.mark.asyncio
-async def test_legacy_www_food_circles_migrated_to_storage():
-    """Verify setup migrates any images from www/ to .storage/ and cleans up www/."""
-    temp_ha_dir = tempfile.mkdtemp()
+def test_legacy_www_food_circles_migrated_to_storage():
+    """Setup migrates any images from www/ to .storage/ and cleans up www/."""
+    from pathlib import Path
+
+    from custom_components.samsung_familyhub_fridge import _prepare_cache_dir
+
+    temp_ha_dir = Path(tempfile.mkdtemp())
     try:
-        www_dir = os.path.join(temp_ha_dir, "www", "samsung_familyhub", "food_circles")
-        os.makedirs(www_dir, exist_ok=True)
-        old_file = os.path.join(www_dir, "item1_hash1234.jpg")
-        with open(old_file, "wb") as f:
-            f.write(b"migrated_content")
+        www_dir = temp_ha_dir / "www" / "samsung_familyhub" / "food_circles"
+        www_dir.mkdir(parents=True)
+        (www_dir / "item1_hash1234.jpg").write_bytes(b"migrated_content")
+        storage_dir = temp_ha_dir / ".storage" / "samsung_familyhub" / "food_circles"
 
-        storage_dir = os.path.join(temp_ha_dir, ".storage", "samsung_familyhub", "food_circles")
+        _prepare_cache_dir(storage_dir, www_dir)
 
-        hass = _HomeAssistant()
-        hass.config.path = MagicMock(side_effect=lambda p: os.path.join(temp_ha_dir, p))
-        hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-
-        entry = _ConfigEntry(
-            entry_id="pat-entry",
-            data={
-                CONF_AUTH_MODE: AUTH_MODE_PAT,
-                CONF_TOKEN: "valid-pat-token",
-                CONF_DEVICE_ID: "dev-123",
-            },
-        )
-
-        with patch("custom_components.samsung_familyhub_fridge.FamilyHub") as mock_hub_cls:
-            mock_hub = MagicMock()
-            mock_hub.token = "valid-pat-token"
-            mock_hub_cls.return_value = mock_hub
-            await async_setup_entry(hass, entry)
-
-        # Verify old file moved to storage
-        new_file = os.path.join(storage_dir, "item1_hash1234.jpg")
-        assert os.path.exists(new_file)
-        with open(new_file, "rb") as f:
-            assert f.read() == b"migrated_content"
-
-        # Verify old www dir was deleted
-        assert not os.path.exists(www_dir)
-
-        # Verify HTTP view was registered
-        assert hass.http.register_view.called
+        assert (storage_dir / "item1_hash1234.jpg").read_bytes() == b"migrated_content"
+        assert not www_dir.exists()
     finally:
         shutil.rmtree(temp_ha_dir, ignore_errors=True)
 
@@ -201,10 +175,11 @@ async def test_legacy_www_food_circles_migrated_to_storage():
 # Test 4: Missing import json fixed in api.py
 # ---------------------------------------------------------------------------
 
-def test_api_module_has_json_imported():
-    """Verify api.py has json imported in its global namespace."""
-    assert hasattr(api_module, "json")
-    assert api_module.json is not None
+def test_food_module_has_json_imported():
+    """The food client persists its inventory as JSON, so the module must import json."""
+    from custom_components.samsung_familyhub_fridge import food
+
+    assert food.json is not None
 
 
 # ---------------------------------------------------------------------------

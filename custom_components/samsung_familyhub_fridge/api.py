@@ -1,319 +1,103 @@
+"""SmartThings Family Hub fridge client (no Home Assistant dependencies)."""
 from __future__ import annotations
-import os
-import json
+
 import asyncio
-import hashlib
-import re
-from datetime import datetime, timezone, timedelta
 import logging
 import time
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import Any
 
-from homeassistant.helpers.update_coordinator import (
-    DataUpdateCoordinator,
-    UpdateFailed,
-)
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 import requests
 
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.storage import Store
-
-from .const import (
-    DOMAIN,
-    CID,
-    DEFAULT_TIMEOUT,
-    CONF_FOOD_TOKEN,
-    WHISK_FOODLIST_API,
-    DEFAULT_FOOD_UPDATE_INTERVAL,
-    DEFAULT_POLL_INTERVAL,
-    KICS_CLIENT_ID,
-    KICS_FOODLIST_ENDPOINT,
-    KICS_SA_AUTH_URL,
-    CONF_KICS_TOKEN,
-    CONF_LOCATION_ID,
-    CONF_ROTATOR_API_KEY,
-    CONF_ROTATOR_URL,
-    DEFAULT_ROTATOR_URL,
-    CONF_FOOD_UPDATE_INTERVAL,
-)
-
-if TYPE_CHECKING:
-    from homeassistant.helpers import config_entry_oauth2_flow
+from .const import CID, DEFAULT_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
 
-def rotator_headers(api_key: str | None) -> dict[str, str]:
-    """Return the Authorization header for the token rotator, if an API key is set."""
-    return {"Authorization": f"Bearer {api_key.strip()}"} if api_key and api_key.strip() else {}
-
-
-def resolve_rotator_api_key(hass: HomeAssistant) -> str | None:
-    """Return the rotator API key from the integration's options/data (call on the event loop)."""
-    for entry in hass.config_entries.async_entries(DOMAIN):
-        key = entry.options.get(CONF_ROTATOR_API_KEY) or entry.data.get(CONF_ROTATOR_API_KEY)
-        if key and str(key).strip():
-            return str(key).strip()
-    return None
+SAMSUNG_AUTH_SERVER = "https://us-auth2.samsungosp.com"
+TOKEN_REFRESH_MARGIN = 300  # refresh OAuth access tokens this many seconds before expiry
+DEFAULT_TOKEN_LIFETIME = 3600
 
 
 class AuthenticationError(Exception):
-    """Raised when SmartThings API returns an authentication error (401/403)."""
+    """Raised when SmartThings or Samsung rejects the credentials (HTTP 401/403, bad refresh)."""
 
 
 class RateLimitError(Exception):
     """Raised when SmartThings answers HTTP 429 (too many requests)."""
 
 
-class DataCoordinator(DataUpdateCoordinator):
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        api: FamilyHub,
-        poll_interval: int = DEFAULT_POLL_INTERVAL,
-    ):
-        super().__init__(
-            hass,
-            _LOGGER,
-            name="File ID refresher",
-            update_interval=timedelta(seconds=poll_interval),
-        )
-        self._rate_limited = False
-        self._hass = hass
-        self.api = api
-        self.last_file_ids = []
-        self.last_updated_at = None
-        self._consecutive_failures = 0
-        self._max_consecutive_failures = 10
-        self._consecutive_download_failures = 0
-        self._pat_expires_at = 0.0
-
-    def _resolve_rotator_url(self) -> str:
-        """Resolve the rotator base URL from integration entries, helpers, or defaults."""
-        entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
-        for entry in entries:
-            opt = entry.options.get(CONF_ROTATOR_URL) or entry.data.get(CONF_ROTATOR_URL)
-            if opt and str(opt).strip():
-                return str(opt).strip().rstrip("/")
-        env_url = os.environ.get("PAT_ROTATOR_URL")
-        if env_url and env_url.strip():
-            return env_url.strip().rstrip("/")
-        return DEFAULT_ROTATOR_URL.rstrip("/")
-
-    async def _async_update_data(self):
-        """Fetch data from API endpoint."""
-        
-        # ── Dynamic Token Refresh & Persistence ────────────────────────────
-        now = time.time()
-        # Query companion rotator REST server only when PAT is missing, uninitialized, or has reached scheduled rotation
-        if not self.api.token or not self._pat_expires_at or now >= self._pat_expires_at:
-            rotator_base = self._resolve_rotator_url()
-            rotator_hdrs = rotator_headers(resolve_rotator_api_key(self._hass))
-            try:
-                r = await self._hass.async_add_executor_job(
-                    lambda: requests.get(f"{rotator_base}/pat", headers=rotator_hdrs, timeout=2)
-                )
-                if r.ok:
-                    data = r.json()
-                    pat_tok = data.get("token")
-                    next_rot = data.get("next_rotation_at")
-                    self._pat_expires_at = float(next_rot) if next_rot else (now + (22 * 3600))
-                    if pat_tok and pat_tok.strip() and pat_tok.strip() != self.api.token:
-                        _LOGGER.info("Picked up fresh SmartThings PAT directly from rotator (%s/pat)", rotator_base)
-                        self.api.update_token(pat_tok.strip())
-                        entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
-                        for entry in entries:
-                            if entry.data.get("token") != pat_tok.strip():
-                                new_data = {**entry.data, "token": pat_tok.strip()}
-                                self._hass.config_entries.async_update_entry(entry, data=new_data)
-                                _LOGGER.info("Updated config entry on disk with new SmartThings PAT")
-            except Exception:
-                # If network fails, retry in 5 minutes
-                self._pat_expires_at = now + 300
-
-        # ───────────────────────────────────────────────────────────────────
-
-        try:
-            # OAuth mode: refresh the access token (if close to expiry) BEFORE
-            # any API call. No-op for PAT mode.
-            await self.api.async_ensure_fresh_token()
-            if self.api.device_id is None:
-                _LOGGER.debug("No device_id — fetching device list")
-                status = await self._hass.async_add_executor_job(
-                    self.api.get_all_device_status
-                )
-                self.api.set_device_status(status)
-            file_ids = self.api.get_file_ids()
-            if self.api.should_update:
-                _LOGGER.debug("should_update=True → sending refresh command to fridge")
-                await self._hass.async_add_executor_job(self.api.update_camera)
-                self.api.should_update = False
-            elif file_ids and set(self.last_file_ids) != set(file_ids):
-                _LOGGER.debug(
-                    "file IDs changed: %s → %s, downloading images",
-                    self.last_file_ids,
-                    file_ids,
-                )
-                success = await self._hass.async_add_executor_job(
-                    self.api.download_images
-                )
-                if success:
-                    self.last_updated_at = time.time()
-                    self.last_file_ids = file_ids
-                    self._consecutive_download_failures = 0
-                    # Trigger food inventory sync upon door close / new camera snapshot upload
-                    if getattr(self, "food_coordinator", None) is not None:
-                        self.food_coordinator.async_trigger_door_close_sync(12)
-                else:
-                    self._consecutive_download_failures += 1
-                    if self._consecutive_download_failures <= 3:
-                        _LOGGER.warning(
-                            "download_images returned no successes (attempt %d) — will retry on next poll",
-                            self._consecutive_download_failures,
-                        )
-                    elif self._consecutive_download_failures == 4:
-                        _LOGGER.warning(
-                            "download_images failed repeatedly (%d attempts) — suppressing further warnings until recovery",
-                            self._consecutive_download_failures,
-                        )
-                    # After repeated failures downloading changed file IDs, allow status polling
-                    # to continue so the coordinator does not deadlock on stale/invalid file IDs.
-                    if self._consecutive_download_failures >= 3:
-                        status = await self._hass.async_add_executor_job(
-                            self.api.get_current_device_status
-                        )
-                        if status and isinstance(status, dict) and "error" not in status:
-                            self.api.set_current_device_status(status)
-                            self.api.extract_device_data()
-            else:
-                status = await self._hass.async_add_executor_job(
-                    self.api.get_current_device_status
-                )
-                if status and isinstance(status, dict) and "error" not in status:
-                    self.api.set_current_device_status(status)
-                    self.api.extract_device_data()
-                _LOGGER.debug(
-                    "polled status: last_closed=%s should_update=%s file_ids=%s",
-                    self.api.last_closed,
-                    self.api.should_update,
-                    self.api.get_file_ids(),
-                )
-            # Reset failure count on success
-            self._consecutive_failures = 0
-            if self._rate_limited:
-                self._rate_limited = False
-                _LOGGER.info("SmartThings is no longer rate limiting requests")
-        except AuthenticationError as err:
-            # Force immediate recovery from rotator
-            self._pat_expires_at = 0.0
-            rotator_base = self._resolve_rotator_url()
-            rotator_hdrs = rotator_headers(resolve_rotator_api_key(self._hass))
-            try:
-                r = await self._hass.async_add_executor_job(
-                    lambda: requests.get(f"{rotator_base}/pat", headers=rotator_hdrs, timeout=2)
-                )
-                if r.ok:
-                    data = r.json()
-                    pat_tok = data.get("token")
-                    next_rot = data.get("next_rotation_at")
-                    self._pat_expires_at = float(next_rot) if next_rot else (time.time() + (22 * 3600))
-                    if pat_tok and pat_tok.strip() and pat_tok.strip() != self.api.token:
-                        _LOGGER.info("Recovered from auth error with fresh PAT from rotator (%s/pat)", rotator_base)
-                        self.api.update_token(pat_tok.strip())
-                        entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
-                        for entry in entries:
-                            new_data = {**entry.data, "token": pat_tok.strip()}
-                            self._hass.config_entries.async_update_entry(entry, data=new_data)
-                        return await self._async_update_data()
-            except Exception:
-                pass
-
-            raise ConfigEntryAuthFailed(
-                "SmartThings token expired or is invalid. "
-                "Please re-authenticate with a new token."
-            ) from err
-        except RateLimitError:
-            # Skip this poll quietly; one warning per episode instead of an error every poll.
-            if not self._rate_limited:
-                self._rate_limited = True
-                _LOGGER.warning(
-                    "SmartThings is rate limiting requests (HTTP 429); skipping polls until it "
-                    "clears. A longer poll interval (Configure) or fewer clients on this token helps."
-                )
-            return self.data
-        except Exception as err:
-            self._consecutive_failures += 1
-            if self._consecutive_failures < self._max_consecutive_failures:
-                _LOGGER.debug(
-                    "Transient error fetching fridge data (%d/%d): %s. Retrying on next poll.",
-                    self._consecutive_failures,
-                    self._max_consecutive_failures,
-                    err,
-                )
-                return self.data
-            _LOGGER.error(
-                "SmartThings fridge communication failed %d consecutive times: %s",
-                self._consecutive_failures,
-                err,
-            )
-            raise UpdateFailed(
-                f"SmartThings API failed {self._consecutive_failures} consecutive times: {err}"
-            ) from err
-
-
 class FamilyHub:
     """SmartThings Family Hub fridge API client.
 
-    Two auth modes:
-
-    1. PAT mode (default): caller provides a raw SmartThings token via
-       `token=`. Token is static; caller is responsible for refresh via
-       `update_token()`.
-
-    2. OAuth mode: after construction, caller attaches an
-       ``OAuth2Session`` via `attach_oauth_session(session)`. Before every
-       API call the coordinator awaits `async_ensure_fresh_token()` which
-       asks HA's OAuth2Session to refresh the access token if it's close
-       to expiry — no manual refresh needed.
+    The caller supplies a bearer token (a PAT, or an OAuth access token) and may attach a
+    ``token_refresher`` so OAuth access tokens are renewed before they expire. All HTTP
+    methods block; call them from an executor thread.
     """
 
-    def __init__(self, hass: HomeAssistant, token: str, device_id: str) -> None:
-        """Initialize."""
+    def __init__(
+        self,
+        token: str,
+        device_id: str | None = None,
+        *,
+        on_iot_refresh_token: Callable[[str], None] | None = None,
+    ) -> None:
         self._device_id = device_id
-        self._hass = hass
         self.token = token
-        self._headers = {"Authorization": f"Bearer {self.token}"}
-        self.images = []
-        self._device_status = None
-        self._current_device_status = None
-        self.last_closed = None
+        self._headers = {"Authorization": f"Bearer {token}"}
+        self._device_status: dict[str, Any] | None = None
+        self._current_device_status: dict[str, Any] | None = None
+        self.last_closed: str | None = None
         self.should_update = False
-        self.downloaded_images = [None, None, None]
-        self._oauth_session: "config_entry_oauth2_flow.OAuth2Session | None" = None
-        # Samsung IoT token for client.smartthings.com image downloads.
-        # Only set in OAuth mode; PAT tokens already carry Samsung ID.
-        self._samsung_iot_token: str | None = None
-        self._samsung_iot_headers: dict | None = None
+        self.downloaded_images: list[bytes | None] = [None, None, None]
+        self._location_id: str | None = None
+        self._refresher: Callable[[], Awaitable[Any]] | None = None
+        self._token_expires_at = 0.0
+        self._refresh_lock = asyncio.Lock()
+        # Samsung IoT token for client.smartthings.com image downloads (Standalone OAuth only;
+        # PATs already carry a Samsung ID).
+        self._samsung_iot_headers: dict[str, str] | None = None
         self._samsung_iot_refresh_token: str | None = None
-        self._samsung_iot_auth_server: str = "https://us-auth2.samsungosp.com"
-        self._entry = None
-        self.startup_rotator_data: dict[str, Any] = {}
+        self._samsung_iot_auth_server = SAMSUNG_AUTH_SERVER
+        self._on_iot_refresh_token = on_iot_refresh_token
+
+    # --- credentials ---------------------------------------------------------------
+
+    def update_token(self, token: str) -> None:
+        """Replace the bearer token (after a rotator pickup, re-auth or OAuth refresh)."""
+        self.token = token
+        self._headers = {"Authorization": f"Bearer {token}"}
+
+    def set_token_refresher(
+        self, refresher: Callable[[], Awaitable[Any]], expires_in: int | None = None
+    ) -> None:
+        """Renew the access token through ``refresher`` shortly before it expires.
+
+        ``refresher`` is an async callable returning an object with ``access_token`` and
+        ``expires_in``; it is also responsible for persisting any rotated refresh token.
+        """
+        self._refresher = refresher
+        self._token_expires_at = time.monotonic() + (expires_in or DEFAULT_TOKEN_LIFETIME)
+
+    async def async_ensure_fresh_token(self) -> None:
+        """Refresh the access token if it is about to expire (no-op without a refresher)."""
+        if self._refresher is None or time.monotonic() < self._token_expires_at - TOKEN_REFRESH_MARGIN:
+            return
+        async with self._refresh_lock:
+            if time.monotonic() < self._token_expires_at - TOKEN_REFRESH_MARGIN:
+                return  # another caller refreshed while we waited
+            credentials = await self._refresher()
+            self.update_token(credentials.access_token)
+            self._token_expires_at = time.monotonic() + (
+                getattr(credentials, "expires_in", 0) or DEFAULT_TOKEN_LIFETIME
+            )
 
     def set_samsung_iot_token(
         self,
         token: str,
         refresh_token: str | None = None,
         auth_server: str | None = None,
-        entry=None,
     ) -> None:
-        """Set a Samsung IoT token for client.smartthings.com image downloads.
-
-        This token carries Samsung Account identity and is needed because
-        the udo/file_links endpoint rejects standard SmartThings OAuth tokens.
-        Optionally store a refresh_token, auth_server, and config entry so
-        download_images() can silently refresh the token on auth failures.
-        """
-        self._samsung_iot_token = token
+        """Use a Samsung IoT token for image downloads (the file endpoint rejects OAuth tokens)."""
         self._samsung_iot_headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.smartthings+json;v=1",
@@ -322,121 +106,59 @@ class FamilyHub:
             self._samsung_iot_refresh_token = refresh_token
         if auth_server is not None:
             self._samsung_iot_auth_server = auth_server
-        if entry is not None:
-            self._entry = entry
-
-    def _is_no_samsung_id_error(self, response: requests.Response) -> bool:
-        """Return True if response body contains 'No samsung id' (400 auth error)."""
-        try:
-            return "No samsung id" in response.text
-        except Exception:
-            return False
 
     def _do_samsung_iot_refresh(self) -> None:
-        """Refresh the Samsung IoT token in-place and persist the new refresh token."""
+        """Refresh the Samsung IoT token in place and report the rotated refresh token."""
         from .auth import refresh_samsung_iot_token
 
         try:
-            iot_creds = refresh_samsung_iot_token(
-                self._samsung_iot_refresh_token,
-                self._samsung_iot_auth_server,
+            credentials = refresh_samsung_iot_token(
+                self._samsung_iot_refresh_token, self._samsung_iot_auth_server
             )
-        except Exception as err:
-            raise AuthenticationError(
-                f"Samsung IoT token refresh failed: {err}"
-            ) from err
-
+        except Exception as err:  # noqa: BLE001 - auth.py raises AuthError/HTTPError/KeyError
+            raise AuthenticationError(f"Samsung IoT token refresh failed: {err}") from err
         self.set_samsung_iot_token(
-            iot_creds.access_token,
-            refresh_token=iot_creds.refresh_token,
+            credentials.access_token,
+            refresh_token=credentials.refresh_token,
             auth_server=self._samsung_iot_auth_server,
-            entry=self._entry,
         )
+        if self._on_iot_refresh_token is not None:
+            self._on_iot_refresh_token(credentials.refresh_token)
 
-        if self._entry is not None:
-            from .const import CONF_SAMSUNG_IOT_REFRESH_TOKEN
-            new_data = {
-                **self._entry.data,
-                CONF_SAMSUNG_IOT_REFRESH_TOKEN: iot_creds.refresh_token,
-            }
-            self._hass.config_entries.async_update_entry(self._entry, data=new_data)
-
-    def attach_oauth_session(
-        self, session: "config_entry_oauth2_flow.OAuth2Session"
-    ) -> None:
-        """Bind an HA OAuth2Session so tokens refresh automatically.
-
-        Once attached, `async_ensure_fresh_token()` consults this session
-        before every API call and updates the bearer header in place.
-        """
-        self._oauth_session = session
-
-    async def async_ensure_fresh_token(self) -> None:
-        """If running in OAuth mode, ensure the bearer token is still valid.
-
-        No-op for PAT mode. Safe to call on every poll — HA's OAuth2Session
-        only performs a network refresh when the access_token is within
-        a few seconds of expiring.
-        """
-        if self._oauth_session is None:
-            return
-        await self._oauth_session.async_ensure_token_valid()
-        new_token = self._oauth_session.token.get("access_token")
-        if new_token and new_token != self.token:
-            self.update_token(new_token)
-
-    def update_token(self, token: str) -> None:
-        """Update the API token (used after re-authentication or OAuth refresh)."""
-        self.token = token
-        self._headers = {"Authorization": f"Bearer {self.token}"}
+    @staticmethod
+    def _is_no_samsung_id_error(response: requests.Response) -> bool:
+        return "No samsung id" in response.text
 
     @property
-    def device_id(self):
+    def device_id(self) -> str | None:
         if not self._device_id:
             self.set_device_id()
         return self._device_id
 
     def _check_response(self, response: requests.Response) -> None:
-        """Check HTTP response for auth errors and raise accordingly."""
+        """Raise for authentication failures and rate limiting; warn on other HTTP errors."""
         if response.status_code in (401, 403):
             _LOGGER.error(
-                "SmartThings authentication failed (HTTP %s). "
-                "Token may have expired — SmartThings personal access tokens "
-                "expire after 24 hours",
+                "SmartThings authentication failed (HTTP %s). The token may have expired; "
+                "SmartThings personal access tokens expire after 24 hours",
                 response.status_code,
             )
             raise AuthenticationError(
-                f"SmartThings API returned HTTP {response.status_code}. "
-                "Token is expired or invalid."
+                f"SmartThings API returned HTTP {response.status_code}. Token is expired or invalid."
             )
         if response.status_code == 429:
             raise RateLimitError("SmartThings API returned HTTP 429")
         if response.status_code == 400:
             try:
-                body = response.json()
-                err = body.get("error", {})
-                if (
-                    err.get("code") == "BadRequestError"
-                    and "No samsung id" in err.get("message", "")
-                ):
-                    raise AuthenticationError(
-                        "No samsung id available — switch to Standalone OAuth or add "
-                        "Samsung Account credentials"
-                    )
-            except AuthenticationError:
-                raise
-            except Exception:
-                pass
+                error = response.json().get("error", {})
+            except (ValueError, AttributeError):
+                error = {}
+            if error.get("code") == "BadRequestError" and "No samsung id" in error.get("message", ""):
+                raise AuthenticationError(
+                    "No samsung id available: switch to Standalone OAuth or add Samsung Account credentials"
+                )
         if not response.ok:
-            _LOGGER.warning(
-                "SmartThings API request failed: HTTP %s",
-                response.status_code,
-            )
-
-    async def authenticate(self) -> bool:
-        """Test if we can authenticate with the host."""
-        await self._hass.async_add_executor_job(self.get_all_device_status)
-        return True
+            _LOGGER.warning("SmartThings API request failed: HTTP %s", response.status_code)
 
     def set_device_status(self, status):
         """Update device status list if the payload is valid."""
@@ -525,11 +247,10 @@ class FamilyHub:
                 )
                 result[idx] = r.content
                 successes += 1
-            except AuthenticationError:
-                # Auth errors must propagate up so the coordinator can
-                # trigger reauth — do not swallow.
+            except (AuthenticationError, RateLimitError):
+                # Let the coordinator handle reauth / rate limiting.
                 raise
-            except Exception as err:
+            except (requests.RequestException, RuntimeError) as err:
                 _LOGGER.warning(
                     "download_images[%d]: failed to download file_id=%s: %s",
                     idx,
@@ -579,7 +300,7 @@ class FamilyHub:
 
     def get_location_id(self) -> str | None:
         """Get the SmartThings locationId for the fridge device."""
-        if hasattr(self, "_location_id") and self._location_id:
+        if self._location_id:
             return self._location_id
         if not self.device_id:
             return None
@@ -595,7 +316,7 @@ class FamilyHub:
                     _LOGGER.debug("Discovered SmartThings locationId for fridge")
                     self._location_id = loc
                     return loc
-        except Exception as err:
+        except (requests.RequestException, ValueError) as err:
             _LOGGER.debug("Could not fetch locationId for device %s: %s", self.device_id, err)
         return None
 
@@ -700,539 +421,4 @@ class FamilyHub:
             r.text[:300],
         )
 
-
-class SamsungFoodClient:
-    """Client for querying Samsung Food (Whisk) AI Food Manager inventory."""
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        token: str | None = None,
-        location_id: str | None = None,
-        rotator_url: str | None = None,
-        config_entry: Any = None,
-    ) -> None:
-        self.hass = hass
-        self._configured_token = token
-        self._location_id = location_id
-        self._configured_rotator_url = rotator_url
-        self.config_entry = config_entry
-        self._rotator_headers = rotator_headers(
-            (config_entry.options.get(CONF_ROTATOR_API_KEY) or config_entry.data.get(CONF_ROTATOR_API_KEY))
-            if config_entry is not None
-            else None
-        )
-        self._cached_inventory: dict | None = None
-        self._session: requests.Session | None = None
-        self._cached_kics_token: str | None = None
-        self._kics_expires_at: float = 0.0
-        self._cached_whisk_token: str | None = None
-        self._whisk_expires_at: float = 0.0
-        # Last-known tokens/location survive restarts, so a briefly unreachable rotator
-        # doesn't leave the sensor without credentials.
-        self._store: Store[dict[str, Any]] = Store(hass, 1, f"{DOMAIN}.token_cache")
-        self._persisted: dict[str, Any] = {}
-
-    async def async_restore_cache(self) -> None:
-        """Restore unexpired tokens and the location ID saved by a previous run."""
-        data = await self._store.async_load()
-        if not isinstance(data, dict):
-            return
-        self._persisted = dict(data)
-        now = time.time()
-        if data.get("kics_token") and not self._cached_kics_token:
-            expires = float(data.get("kics_expires_at") or 0.0)
-            if not expires or expires > now:
-                self._cached_kics_token = data["kics_token"]
-                self._kics_expires_at = expires
-        if data.get("whisk_token") and not self._cached_whisk_token:
-            expires = float(data.get("whisk_expires_at") or 0.0)
-            if not expires or expires > now:
-                self._cached_whisk_token = data["whisk_token"]
-                self._whisk_expires_at = expires
-        if data.get("location_id") and not self._location_id:
-            self._location_id = data["location_id"]
-
-    async def _async_persist_cache(self) -> None:
-        """Save current tokens/location if they changed (runs on the event loop)."""
-        snapshot = {
-            "kics_token": self._cached_kics_token,
-            "kics_expires_at": self._kics_expires_at,
-            "whisk_token": self._cached_whisk_token,
-            "whisk_expires_at": self._whisk_expires_at,
-            "location_id": self._location_id,
-        }
-        if snapshot != self._persisted:
-            await self._store.async_save(snapshot)
-            self._persisted = snapshot
-
-    def _resolve_rotator_base_url(self) -> str:
-        """Resolve the base URL of the PAT / KICS rotator microservice."""
-        if self._configured_rotator_url and self._configured_rotator_url.strip():
-            return self._configured_rotator_url.strip().rstrip("/")
-
-        if self.config_entry:
-            opt_url = (
-                self.config_entry.options.get(CONF_ROTATOR_URL)
-                or self.config_entry.data.get(CONF_ROTATOR_URL)
-            )
-            if opt_url and str(opt_url).strip():
-                return str(opt_url).strip().rstrip("/")
-
-        # Check environment variable
-        env_url = os.environ.get("PAT_ROTATOR_URL")
-        if env_url and env_url.strip():
-            return env_url.strip().rstrip("/")
-
-        return DEFAULT_ROTATOR_URL.rstrip("/")
-
-    def _load_cached_inventory_from_disk(self) -> None:
-        """Attempt to restore cached inventory from disk on startup."""
-        try:
-            cache_file = self.hass.config.path(".storage/samsung_familyhub/food_circles/inventory.json")
-            if os.path.exists(cache_file):
-                with open(cache_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict) and data.get("items"):
-                        self._cached_inventory = data
-                        _LOGGER.info("SamsungFoodClient: Restored %d cached food items from disk.", len(data["items"]))
-        except Exception as err:
-            _LOGGER.debug("Could not restore cached inventory from disk: %s", err)
-
-    def _get_session(self) -> requests.Session:
-        """Get or create requests.Session with retries."""
-        if self._session is None:
-            self._session = requests.Session()
-        return self._session
-
-    def _get_rotator_token_sync(self) -> str | None:
-        """Fetch the KICS/Food token from the rotator (runs in an executor thread)."""
-        now = time.time()
-        if self._cached_kics_token and (not self._kics_expires_at or now < self._kics_expires_at):
-            return self._cached_kics_token
-
-        rotator_base = self._resolve_rotator_base_url()
-        for endpoint in (
-            f"{rotator_base}/kics_token",
-            f"{rotator_base}/food_token",
-        ):
-            try:
-                res = requests.get(endpoint, headers=self._rotator_headers, timeout=2)
-                if res.ok:
-                    data = res.json()
-                    tok = data.get("token")
-                    next_rot = data.get("next_rotation_at")
-                    if tok and tok.strip():
-                        _LOGGER.info("SamsungFoodClient: Loaded active token from local rotator (%s)", endpoint)
-                        self._cached_kics_token = tok.strip()
-                        self._kics_expires_at = float(next_rot) if next_rot else (now + (22 * 3600))
-                        return tok.strip()
-            except Exception:
-                pass
-
-        return None
-
-    async def async_get_token(self) -> str | None:
-        """Retrieve Whisk/Samsung Food token without blocking the event loop."""
-        if self._configured_token and self._configured_token.strip():
-            return self._configured_token.strip()
-
-        now = time.time()
-        if self._cached_kics_token and (not self._kics_expires_at or now < self._kics_expires_at):
-            return self._cached_kics_token
-
-        tok = await self.hass.async_add_executor_job(self._get_rotator_token_sync)
-        if tok:
-            self._cached_kics_token = tok
-            if not self._kics_expires_at or now >= self._kics_expires_at:
-                self._kics_expires_at = now + (22 * 3600)
-        return tok
-
-    async def async_has_token(self) -> bool:
-        """Check if a valid token is available without blocking."""
-        token = await self.async_get_token()
-        return bool(token)
-
-    def _get_whisk_stock_map(self, session: requests.Session) -> dict[str, str]:
-        """Try to fetch Whisk inventory to map item ID / canonical name to stock photo."""
-        now = time.time()
-        whisk_token = None
-        if self._cached_whisk_token and (not self._whisk_expires_at or now < self._whisk_expires_at):
-            whisk_token = self._cached_whisk_token
-        else:
-            rotator_base = self._resolve_rotator_base_url()
-            try:
-                r = session.get(f"{rotator_base}/food_token", headers=self._rotator_headers, timeout=2)
-                if r.ok:
-                    data = r.json()
-                    tok = data.get("token")
-                    next_rot = data.get("next_rotation_at")
-                    if tok and tok.strip():
-                        whisk_token = tok.strip()
-                        self._cached_whisk_token = whisk_token
-                        self._whisk_expires_at = float(next_rot) if next_rot else (now + (27 * 86400))
-            except Exception:
-                pass
-
-        if not whisk_token or len(whisk_token) < 35:
-            return {}
-
-        clean_auth = whisk_token if whisk_token.startswith("Bearer ") or whisk_token.startswith("Token ") else f"Bearer {whisk_token}"
-        raw_token = whisk_token.replace("Bearer ", "").replace("Token ", "").strip()
-        headers = {
-            "Authorization": clean_auth,
-            "x-whisk-token": raw_token,
-            "Accept": "application/json",
-        }
-        stock_map: dict[str, str] = {}
-        try:
-            r = session.get(WHISK_FOODLIST_API, headers=headers, timeout=10)
-            if r.ok:
-                for itm in r.json().get("items", []):
-                    itm_id = itm.get("id")
-                    c = itm.get("content", {})
-                    photo = c.get("image_url") or c.get("photo_url")
-                    name = (c.get("name") or "").lower()
-                    if itm_id and photo:
-                        stock_map[itm_id] = photo
-                    if name and photo:
-                        stock_map[name] = photo
-                _LOGGER.debug("Loaded %d Whisk stock food photos for image fallback.", len(stock_map))
-        except Exception as err:
-            _LOGGER.debug("Could not build Whisk stock photo map: %s", err)
-        return stock_map
-
-    def _get_location_id_sync(self) -> str:
-        """Resolve the fridge's SmartThings location ID (runs in an executor thread).
-
-        Order: configured override / cached value, the SmartThings device record,
-        then the rotator's /location_id endpoint.
-        """
-        if self._location_id and self._location_id.strip():
-            return self._location_id.strip()
-
-        hub = self.hass.data.get(DOMAIN, {}).get("hub")
-        if hub is not None:
-            try:
-                loc = hub.get_location_id()
-            except Exception as err:
-                _LOGGER.debug("Could not read locationId from SmartThings: %s", err)
-            else:
-                if loc:
-                    self._location_id = loc.strip()
-                    return self._location_id
-
-        try:
-            r = requests.get(
-                f"{self._resolve_rotator_base_url()}/location_id",
-                headers=self._rotator_headers,
-                timeout=2,
-            )
-            if r.ok:
-                loc = r.json().get("location_id")
-                if loc and str(loc).strip() and not str(loc).startswith("YOUR_"):
-                    self._location_id = str(loc).strip()
-                    return self._location_id
-        except (requests.RequestException, ValueError) as err:
-            _LOGGER.debug("Could not read location_id from rotator: %s", err)
-
-        return ""
-
-    def _fetch_food_items_sync(self, token: str) -> dict:
-        """Synchronously fetch all food items from KICS EPA or Whisk/Samsung Food API."""
-        if self._cached_inventory is None:
-            self._load_cached_inventory_from_disk()
-
-        session = self._get_session()
-        clean_auth = token if token.startswith("Bearer ") or token.startswith("Token ") else f"Bearer {token}"
-        raw_token = token.replace("Bearer ", "").replace("Token ", "").strip()
-
-        # 1. Try KICS EPA endpoint first (Live Food Circles from Fridge Camera)
-        location_id = self._get_location_id_sync()
-        if not location_id:
-            raise UpdateFailed(
-                "KICS EPA food circles requires a location_id. Set your fridge's Location ID under "
-                "Settings → Devices & Services → Samsung FamilyHub → Configure."
-            )
-
-        kics_headers = {
-            "authorization": clean_auth,
-            "kics-sa-auth-url": KICS_SA_AUTH_URL,
-            "kics-sa-app-id": KICS_CLIENT_ID,
-            "kics-location": location_id,
-            "kics-client-platform": "android",
-            "kics-client-version": "KS.ST.2.11-20",
-            "accept": "application/json, text/plain, */*",
-            "user-agent": "Mozilla/5.0 (Linux; Android 17; sdk_gphone16k_x86_64) AppleWebKit/537.36",
-        }
-        kics_error_msg = None
-        for attempt in range(1, 4):
-            try:
-                r = session.get(KICS_FOODLIST_ENDPOINT, headers=kics_headers, timeout=30)
-                if r.ok:
-                    payload = r.json()
-                    items = payload.get("foodData", {}).get("items", [])
-                    stock_map = self._get_whisk_stock_map(session)
-
-                    # Local image cache directory inside Home Assistant's protected .storage folder
-                    cache_dir = self.hass.config.path(".storage/samsung_familyhub/food_circles")
-                    try:
-                        os.makedirs(cache_dir, exist_ok=True)
-                    except Exception as dir_err:
-                        _LOGGER.debug("Could not create food circles cache dir: %s", dir_err)
-
-                    active_filenames = set()
-                    active_items = []
-                    for itm in items:
-                        content = itm.get("content", {})
-                        item_id = itm.get("id", "")
-                        name = content.get("name") or "Unnamed Food Item"
-                        image_url = content.get("imageUrl")
-                        stock_photo = stock_map.get(item_id) or stock_map.get(name.lower())
-                        remote_url = image_url or stock_photo
-                        final_url = remote_url
-
-                        # Cache image locally to shrink attributes from 70KB to ~4KB and prevent S3 expiry
-                        if remote_url and os.path.exists(cache_dir):
-                            id_hash = hashlib.md5(item_id.encode("utf-8")).hexdigest()[:10]
-                            url_base = remote_url.split("?")[0]
-                            url_hash = hashlib.md5(url_base.encode("utf-8")).hexdigest()[:8]
-                            filename = f"{id_hash}_{url_hash}.jpg"
-                            active_filenames.add(filename)
-                            dest_file = os.path.join(cache_dir, filename)
-
-                            # Download only if not already cached
-                            if not os.path.exists(dest_file) or os.path.getsize(dest_file) == 0:
-                                try:
-                                    img_resp = session.get(remote_url, timeout=15)
-                                    if img_resp.ok and len(img_resp.content) > 100:
-                                        with open(dest_file, "wb") as f:
-                                            f.write(img_resp.content)
-                                        _LOGGER.debug("Cached live food circle: %s", filename)
-                                except Exception as dl_err:
-                                    _LOGGER.debug("Could not cache image for %s: %s", name, dl_err)
-
-                            if os.path.exists(dest_file) and os.path.getsize(dest_file) > 0:
-                                from .views import generate_food_circle_sig
-                                auth_secret = self.hass.data.get(DOMAIN, {}).get("auth_secret", "")
-                                sig = generate_food_circle_sig(auth_secret, filename) if auth_secret else ""
-                                final_url = f"/api/samsung_familyhub/food_circles/{filename}" + (f"?sig={sig}" if sig else "")
-
-                        raw_ts = (
-                            content.get("addedAt")
-                            or content.get("createdAt")
-                            or content.get("added_at")
-                            or content.get("created_at")
-                            or content.get("createdTime")
-                            or 0
-                        )
-                        sec_ts = (
-                            int(raw_ts) // 1000
-                            if str(raw_ts).isdigit() and int(raw_ts) > 10000000000
-                            else (int(raw_ts) if str(raw_ts).isdigit() else 0)
-                        )
-                        item_dict = {
-                            "name": name,
-                            "image_url": final_url,
-                            "added_at": sec_ts,
-                            "expiration_date": content.get("expirationDate") or content.get("expiration_date") or None,
-                        }
-                        active_items.append(item_dict)
-
-                    # Prune obsolete/consumed food circle images from previous syncs
-                    try:
-                        if os.path.exists(cache_dir):
-                            for fname in os.listdir(cache_dir):
-                                if fname.endswith(".jpg") and fname not in active_filenames:
-                                    os.remove(os.path.join(cache_dir, fname))
-                                    _LOGGER.debug("Pruned stale food circle: %s", fname)
-                    except Exception as prune_err:
-                        _LOGGER.debug("Error pruning stale food circles: %s", prune_err)
-
-                    _LOGGER.info("SamsungFoodClient: Retrieved %d live food circle items from KICS EPA.", len(active_items))
-                    result = {
-                        "total_items": len(active_items),
-                        "last_synced": datetime.now(timezone.utc).isoformat(),
-                        "items": active_items,
-                        "source": "kics_epa_live_circles",
-                    }
-                    self._cached_inventory = result
-
-                    # Persist inventory to disk for resilient restoration across HA restarts
-                    try:
-                        inv_path = os.path.join(cache_dir, "inventory.json")
-                        with open(inv_path, "w", encoding="utf-8") as f:
-                            json.dump(result, f, indent=2)
-                    except Exception as save_err:
-                        _LOGGER.debug("Could not persist inventory to disk: %s", save_err)
-
-                    return result
-                else:
-                    kics_error_msg = f"HTTP {r.status_code} - {r.text[:200]}"
-                    if r.status_code in (401, 403):
-                        _LOGGER.warning("KICS token was rejected (%d). Clearing cached token.", r.status_code)
-                        self._cached_kics_token = None
-                        self._kics_expires_at = 0.0
-                    elif r.status_code in (502, 503, 504, 524) and attempt < 3:
-                        _LOGGER.info("KICS EPA returned HTTP %d on attempt %d. Retrying in 3s...", r.status_code, attempt)
-                        time.sleep(3)
-                        continue
-                    _LOGGER.warning("KICS EPA response: %s", kics_error_msg)
-                    break
-            except Exception as kics_err:
-                kics_error_msg = str(kics_err)
-                if attempt < 3:
-                    _LOGGER.info("KICS EPA fetch error on attempt %d (%s). Retrying in 3s...", attempt, kics_err)
-                    time.sleep(3)
-                    continue
-                _LOGGER.warning("KICS EPA fetch error: %s", kics_err)
-                break
-
-        # If the token is a KICS token (~26-32 chars) rather than a legacy Whisk token (>35 chars),
-        # do not fall back to Whisk because it will fail with 401 auth.tokenExpired.
-        if len(raw_token) < 35:
-            if self._cached_inventory and self._cached_inventory.get("items"):
-                _LOGGER.info("SamsungFoodClient: Preserving %d cached items after KICS EPA error.", self._cached_inventory.get("total_items", 0))
-                return self._cached_inventory
-            raise UpdateFailed(f"KICS EPA food circles fetch failed: {kics_error_msg or 'Unknown error'}")
-
-        # 2. Fall back to Whisk / Samsung Food API (only for long legacy Whisk tokens)
-        headers = {
-            "Authorization": clean_auth,
-            "x-whisk-token": raw_token,
-            "Accept": "application/json",
-        }
-
-        all_items = []
-        after_cursor = ""
-        page_num = 1
-        fetch_error = None
-        session = self._get_session()
-
-        _LOGGER.debug("SamsungFoodClient: Fetching active food inventory from Samsung Food API...")
-
-        while True:
-            params = {}
-            if after_cursor:
-                params["paging.cursors.after"] = after_cursor
-
-            try:
-                r = session.get(WHISK_FOODLIST_API, headers=headers, params=params, timeout=30)
-                if not r.ok:
-                    _LOGGER.warning("Samsung Food API page %d returned HTTP %s: %s", page_num, r.status_code, r.text[:200])
-                    fetch_error = f"HTTP {r.status_code}"
-                    break
-
-                data = r.json()
-                items = data.get("items", [])
-                all_items.extend(items)
-                _LOGGER.debug("Samsung Food API page %d: %d items (total so far: %d)", page_num, len(items), len(all_items))
-
-                paging = data.get("paging", {})
-                next_cursor = paging.get("cursors", {}).get("after")
-                if next_cursor and next_cursor != after_cursor and len(items) > 0:
-                    after_cursor = next_cursor
-                    page_num += 1
-                else:
-                    break
-            except Exception as err:
-                _LOGGER.warning("Error fetching Samsung Food items on page %d (%s).", page_num, err)
-                fetch_error = str(err)
-                break
-
-        # If fetch encountered an error and we have cached data, retain cache
-        if fetch_error:
-            if self._cached_inventory and self._cached_inventory.get("items"):
-                _LOGGER.info(
-                    "SamsungFoodClient: Transient fetch error (%s). Preserving %d previously-cached active items.",
-                    fetch_error,
-                    self._cached_inventory.get("total_items", 0),
-                )
-                return self._cached_inventory
-            if not all_items:
-                raise UpdateFailed(f"Failed to fetch Samsung Food items: {fetch_error}")
-
-        # Filter active items (economizing payload to stay well under Home Assistant's 16KB attribute limit)
-        active_items = []
-        for itm in all_items:
-            content = itm.get("content", {})
-            status = content.get("presence_status", "")
-            is_consumed = bool(content.get("consumed_at")) or bool(content.get("deleted_at")) or status == "PRESENCE_STATUS_CONSUMED"
-
-            if not is_consumed or status in ("PRESENCE_STATUS_EXISTING", "PRESENCE_STATUS_PRESENT"):
-                active_items.append({
-                    "name": content.get("name") or "Unnamed Food Item",
-                    "added_at": content.get("added_at") or 0,
-                    "expiration_date": content.get("expiration_date") or content.get("days_to_expire") or None,
-                    "image_url": content.get("image_url") or content.get("photo_url") or None,
-                })
-
-        _LOGGER.info("SamsungFoodClient: Sync complete. %d active items found (out of %d total account items).", len(active_items), len(all_items))
-
-        result = {
-            "total_items": len(active_items),
-            "last_synced": datetime.now(timezone.utc).isoformat(),
-            "items": active_items,
-        }
-        self._cached_inventory = result
-        return result
-
-    async def async_get_active_food_items(self) -> dict:
-        """Fetch all active food items asynchronously."""
-        token = await self.async_get_token()
-        if not token:
-            if self._cached_inventory is None:
-                await self.hass.async_add_executor_job(self._load_cached_inventory_from_disk)
-            if self._cached_inventory:
-                return self._cached_inventory
-            return {"total_items": 0, "last_synced": None, "items": []}
-
-        try:
-            return await self.hass.async_add_executor_job(self._fetch_food_items_sync, token)
-        finally:
-            await self._async_persist_cache()
-
-
-class SamsungFoodCoordinator(DataUpdateCoordinator):
-    """Coordinator for syncing Samsung Food AI Food Manager inventory."""
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        client: SamsungFoodClient,
-        update_interval_seconds: int = DEFAULT_FOOD_UPDATE_INTERVAL,
-    ) -> None:
-        super().__init__(
-            hass,
-            _LOGGER,
-            name="Samsung Food Inventory Refresher",
-            update_interval=timedelta(seconds=update_interval_seconds),
-        )
-        self.client = client
-        self._delay_task: asyncio.Task | None = None
-
-    async def _async_update_data(self) -> dict:
-        """Fetch updated active food inventory."""
-        try:
-            return await self.client.async_get_active_food_items()
-        except Exception as err:
-            raise UpdateFailed(f"Failed to fetch Samsung Food inventory: {err}") from err
-
-    def async_trigger_door_close_sync(self, delay_seconds: int = 12) -> None:
-        """Schedule a delayed sync following a door-close event."""
-        if self._delay_task and not self._delay_task.done():
-            self._delay_task.cancel()
-
-        async def _delayed_refresh():
-            try:
-                _LOGGER.debug("Door close detected; waiting %ds for AI vision to commit...", delay_seconds)
-                await asyncio.sleep(delay_seconds)
-                _LOGGER.info("Triggering food inventory refresh after door close...")
-                await self.async_request_refresh()
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                _LOGGER.warning("Error in door-close food sync: %s", e)
-
-        self._delay_task = self.hass.async_create_task(_delayed_refresh())
 

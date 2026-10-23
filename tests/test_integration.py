@@ -16,14 +16,16 @@ All tests in this file are skipped unless a token source is provided.
 
 import os
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from tests.conftest import _HomeAssistant
 
+from custom_components.samsung_familyhub_fridge.coordinator import FridgeCoordinator
 from custom_components.samsung_familyhub_fridge.api import (
     AuthenticationError,
     FamilyHub,
-    DataCoordinator,
 )
 from custom_components.samsung_familyhub_fridge.const import CID
 
@@ -58,7 +60,7 @@ def hass():
 
 @pytest.fixture
 def hub(hass, smartthings_token, device_id):
-    return FamilyHub(hass, token=smartthings_token, device_id=device_id or "")
+    return FamilyHub(token=smartthings_token, device_id=device_id or "")
 
 
 # ---------------------------------------------------------------------------
@@ -82,15 +84,15 @@ class TestRealAuthentication:
     @needs_token
     def test_invalid_token_raises_auth_error(self, hass):
         """A bogus token should trigger a 401/403 and raise AuthenticationError."""
-        bad_hub = FamilyHub(hass, token="this-is-not-a-real-token", device_id="")
+        bad_hub = FamilyHub(token="this-is-not-a-real-token", device_id="")
         with pytest.raises(AuthenticationError):
             bad_hub.get_all_device_status()
 
     @needs_token
     @pytest.mark.asyncio
-    async def test_authenticate_method_succeeds(self, hub):
-        """The async authenticate() helper should return True for a valid token."""
-        result = await hub.authenticate()
+    async def test_authenticate_method_succeeds(self, hass, hub):
+        """A valid token returns the account's device list."""
+        result = bool(await hass.async_add_executor_job(hub.get_all_device_status))
         assert result is True
 
 
@@ -112,7 +114,7 @@ class TestDeviceDiscovery:
     @needs_token
     def test_auto_discover_device_id(self, hass, smartthings_token):
         """When no device_id is provided, set_device_id should find one."""
-        hub = FamilyHub(hass, token=smartthings_token, device_id="")
+        hub = FamilyHub(token=smartthings_token, device_id="")
         status = hub.get_all_device_status()
         hub.set_device_status(status)
         hub._device_id = None
@@ -188,20 +190,20 @@ class TestTokenExpiryDetection:
 
     @needs_token
     def test_bad_token_detected_on_device_status(self, hass):
-        bad_hub = FamilyHub(hass, token="expired-fake-token", device_id="any-device")
+        bad_hub = FamilyHub(token="expired-fake-token", device_id="any-device")
         with pytest.raises(AuthenticationError):
             bad_hub.get_current_device_status()
 
     @needs_token
     def test_bad_token_detected_on_update_camera(self, hass):
-        bad_hub = FamilyHub(hass, token="expired-fake-token", device_id="any-device")
+        bad_hub = FamilyHub(token="expired-fake-token", device_id="any-device")
         with pytest.raises(AuthenticationError):
             bad_hub.update_camera()
 
     @needs_token
     def test_recovery_after_token_update(self, hass, smartthings_token):
         """Simulate: start with bad token → fail → update token → succeed."""
-        hub = FamilyHub(hass, token="bad-token", device_id="")
+        hub = FamilyHub(token="bad-token", device_id="")
 
         # 1. Fails with bad token
         with pytest.raises(AuthenticationError):
@@ -230,8 +232,8 @@ class TestCoordinatorRealApi:
     @pytest.mark.asyncio
     async def test_coordinator_full_poll_cycle(self, hass, smartthings_token, device_id):
         """Run one full coordinator poll cycle against the real API."""
-        hub = FamilyHub(hass, token=smartthings_token, device_id=device_id)
-        coordinator = DataCoordinator(hass, hub)
+        hub = FamilyHub(token=smartthings_token, device_id=device_id)
+        coordinator = FridgeCoordinator(hass, MagicMock(), hub)
 
         # Pre-populate so coordinator takes the status-fetch path
         status = hub.get_current_device_status()
@@ -248,8 +250,8 @@ class TestCoordinatorRealApi:
         """Coordinator should raise ConfigEntryAuthFailed with bad credentials."""
         from tests.conftest import _ConfigEntryAuthFailed
 
-        hub = FamilyHub(hass, token="invalid-token", device_id="fake-device")
-        coordinator = DataCoordinator(hass, hub)
+        hub = FamilyHub(token="invalid-token", device_id="fake-device")
+        coordinator = FridgeCoordinator(hass, MagicMock(), hub)
 
         # Force the code path that calls get_current_device_status
         hub._device_id = "fake-device"
@@ -304,7 +306,7 @@ class TestOAuthTokenRefresh:
 
         # Verify the new token actually works against the API
         hass = _HomeAssistant()
-        hub = FamilyHub(hass, token=new_creds.access_token, device_id="")
+        hub = FamilyHub(token=new_creds.access_token, device_id="")
         result = hub.get_all_device_status()
         assert isinstance(result, dict)
         assert "items" in result

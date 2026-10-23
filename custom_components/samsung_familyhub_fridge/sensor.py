@@ -1,32 +1,18 @@
+"""Sensors: when the camera images last changed, and the food inventory."""
 from __future__ import annotations
+
 from datetime import datetime, timezone
-import logging
+from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import (
-    DOMAIN,
-    CONF_DEVICE_ID,
-    CONF_FOOD_TOKEN,
-    CONF_KICS_TOKEN,
-    CONF_LOCATION_ID,
-    CONF_ROTATOR_URL,
-    CONF_FOOD_UPDATE_INTERVAL,
-    CONF_POLL_INTERVAL,
-    DEFAULT_FOOD_UPDATE_INTERVAL,
-    DEFAULT_POLL_INTERVAL,
-)
-from .api import (
-    DataCoordinator,
-    SamsungFoodClient,
-    SamsungFoodCoordinator,
-)
-
-_LOGGER = logging.getLogger(__name__)
+from .const import CONF_DEVICE_ID
+from .coordinator import FridgeCoordinator
+from .food import SamsungFoodCoordinator
 
 
 async def async_setup_entry(
@@ -34,149 +20,69 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Samsung FamilyHub Fridge sensors."""
-    hub = hass.data[DOMAIN]["hub"]
-    poll_interval = int(
-        config_entry.options.get(CONF_POLL_INTERVAL)
-        or config_entry.data.get(CONF_POLL_INTERVAL)
-        or DEFAULT_POLL_INTERVAL
-    )
-    coordinator = DataCoordinator(hass, hub, poll_interval)
+    """Set up the Samsung FamilyHub Fridge sensors."""
+    runtime = config_entry.runtime_data
     device_id = config_entry.data.get(CONF_DEVICE_ID) or "samsung_familyhub"
-    entities: list[SensorEntity] = [LastUpdatedAt(coordinator, device_id)]
 
-    startup_data = getattr(hub, "startup_rotator_data", {})
-    if startup_data:
-        pat_next = startup_data.get("pat_next_rotation_at") or startup_data.get("next_rotation_at")
-        if pat_next:
-            coordinator._pat_expires_at = float(pat_next)
-
-    # Opt-in: Check if Samsung Food (Whisk) or KICS Food Circles token is available
-    food_token = config_entry.data.get(CONF_FOOD_TOKEN) or config_entry.data.get(CONF_KICS_TOKEN)
-    location_id = (
-        config_entry.options.get(CONF_LOCATION_ID)
-        or config_entry.data.get(CONF_LOCATION_ID)
-        or getattr(hub, "_location_id", None)
-    )
-    rotator_url = (
-        config_entry.options.get(CONF_ROTATOR_URL)
-        or config_entry.data.get(CONF_ROTATOR_URL)
-    )
-    food_interval = int(
-        config_entry.options.get(CONF_FOOD_UPDATE_INTERVAL)
-        or config_entry.data.get(CONF_FOOD_UPDATE_INTERVAL)
-        or DEFAULT_FOOD_UPDATE_INTERVAL
-    )
-    food_client = SamsungFoodClient(
-        hass,
-        token=food_token,
-        location_id=location_id,
-        rotator_url=rotator_url,
-        config_entry=config_entry,
-    )
-
-    if startup_data:
-        import time
-        kics_tok = startup_data.get("kics_token")
-        if kics_tok and str(kics_tok).strip():
-            food_client._cached_kics_token = str(kics_tok).strip()
-            kics_next = startup_data.get("kics_next_rotation_at")
-            if kics_next:
-                food_client._kics_expires_at = float(kics_next)
-            else:
-                food_client._kics_expires_at = time.time() + (22 * 3600)
-        whisk_tok = startup_data.get("samsung_food_token")
-        if whisk_tok and str(whisk_tok).strip():
-            food_client._cached_whisk_token = str(whisk_tok).strip()
-            whisk_next = startup_data.get("food_next_rotation_at")
-            if whisk_next:
-                food_client._whisk_expires_at = float(whisk_next)
-            else:
-                food_client._whisk_expires_at = time.time() + (27 * 86400)
-        loc = startup_data.get("location_id")
-        if loc and str(loc).strip() and not str(loc).startswith("YOUR_") and not food_client._location_id:
-            food_client._location_id = str(loc).strip()
-
-    await food_client.async_restore_cache()
-    if await food_client.async_has_token():
-        _LOGGER.info("Samsung Food token detected. Initializing AI Food Manager inventory sensor.")
-        food_coordinator = SamsungFoodCoordinator(
-            hass,
-            food_client,
-            update_interval_seconds=food_interval,
-        )
-        
-        # Link food_coordinator to camera DataCoordinator for door-close triggered syncs
-        coordinator.food_coordinator = food_coordinator
-        
-        try:
-            await food_coordinator.async_config_entry_first_refresh()
-            entities.append(SamsungFridgeFoodInventorySensor(food_coordinator, device_id))
-        except Exception as err:
-            _LOGGER.warning("Could not perform initial Samsung Food sync: %s", err)
-            entities.append(SamsungFridgeFoodInventorySensor(food_coordinator, device_id))
-    else:
-        _LOGGER.debug("No Samsung Food token found. Skipping Food Inventory sensor creation.")
-
+    entities: list[SensorEntity] = [LastUpdatedAt(runtime.coordinator, device_id)]
+    # The inventory sensor exists only when a food token was found, so non-AI fridges stay uncluttered.
+    if runtime.coordinator.food_coordinator is not None:
+        entities.append(SamsungFridgeFoodInventorySensor(runtime.coordinator.food_coordinator, device_id))
     async_add_entities(entities)
 
 
-class LastUpdatedAt(CoordinatorEntity, SensorEntity):
-    """Sensor tracking the timestamp of the last camera/fridge update."""
+class LastUpdatedAt(CoordinatorEntity[FridgeCoordinator], SensorEntity):
+    """Timestamp of the last camera snapshot the fridge uploaded."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
     _attr_name = "Last Updated At"
 
-    def __init__(self, coordinator: DataCoordinator, device_id: str | None = None) -> None:
-        """Initialize the LastUpdatedAt sensor."""
+    def __init__(
+        self,
+        coordinator: FridgeCoordinator,
+        device_id: str | None = None,
+    ) -> None:
         super().__init__(coordinator)
-        dev_id = device_id or getattr(coordinator.api, "device_id", None) or "samsung_familyhub"
-        self._attr_unique_id = f"{dev_id}_last_updated_at"
+        self._attr_unique_id = f"{device_id or 'samsung_familyhub'}_last_updated_at"
 
     @property
     def native_value(self) -> datetime | None:
-        """Return the timestamp of the last camera/fridge update."""
-        ts = self.coordinator.last_updated_at
-        if ts is not None and isinstance(ts, (int, float)) and ts > 0:
-            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        timestamp = self.coordinator.last_updated_at
+        if isinstance(timestamp, (int, float)) and timestamp > 0:
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
         return None
 
 
 class SamsungFridgeFoodInventorySensor(CoordinatorEntity[SamsungFoodCoordinator], SensorEntity):
-    """Sensor exposing active Samsung Food AI Food Manager inventory."""
+    """Active items from Samsung Food / the fridge's AI Food Manager."""
 
-    _attr_has_entity_name = True
     _attr_icon = "mdi:fridge-food"
+    # The item list is large and changes constantly; keep it out of the recorder database.
+    _unrecorded_attributes = frozenset({"items"})
 
-    def __init__(self, coordinator: SamsungFoodCoordinator, device_id: str) -> None:
+    def __init__(
+        self,
+        coordinator: SamsungFoodCoordinator,
+        device_id: str,
+    ) -> None:
         super().__init__(coordinator)
-        self._device_id = device_id
         self._attr_unique_id = f"{device_id}_food_inventory"
         self._attr_name = "Fridge Food Inventory"
 
     @property
     def available(self) -> bool:
-        """Return True if coordinator update succeeded or data is present."""
-        return self.coordinator.last_update_success or (self.coordinator.data is not None)
+        """Keep showing the last inventory while a refresh is failing."""
+        return self.coordinator.last_update_success or self.coordinator.data is not None
 
     @property
     def native_value(self) -> int:
-        """Return the total number of active food items in the fridge."""
-        if not self.coordinator.data:
-            return 0
-        return int(self.coordinator.data.get("total_items", 0))
+        return int((self.coordinator.data or {}).get("total_items", 0))
 
     @property
-    def extra_state_attributes(self) -> dict:
-        """Return rich state attributes containing active items, locations, and thumbnail URLs."""
-        if not self.coordinator.data:
-            return {
-                "total_items": 0,
-                "last_synced": None,
-                "items": [],
-            }
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
         return {
-            "total_items": self.coordinator.data.get("total_items", 0),
-            "last_synced": self.coordinator.data.get("last_synced"),
-            "items": self.coordinator.data.get("items", []),
+            "total_items": data.get("total_items", 0),
+            "last_synced": data.get("last_synced"),
+            "items": data.get("items", []),
         }
