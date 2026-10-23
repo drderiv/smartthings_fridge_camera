@@ -30,6 +30,8 @@ class Config:
     food_interval_days: float = 28
     kics_interval_hours: float = 23
     kics_refresh_token: str = ""
+    headless: bool = True
+    session_keepalive_minutes: float = 0
 
     @property
     def pat_interval_s(self) -> float:
@@ -75,6 +77,8 @@ class Config:
                 food_interval_days=float(raw.get("food_rotation_interval_days", 28)),
                 kics_interval_hours=float(raw.get("kics_rotation_interval_hours", 23)),
                 kics_refresh_token=str(raw.get("kics_refresh_token") or "").strip(),
+                headless=bool(raw.get("headless", True)),
+                session_keepalive_minutes=float(raw.get("session_keepalive_minutes", 0)),
             )
         except (TypeError, ValueError) as err:
             raise ConfigError(f"Invalid value in {path}: {err}") from err

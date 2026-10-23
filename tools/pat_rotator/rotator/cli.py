@@ -117,12 +117,23 @@ def kics_main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def session_main(argv: list[str] | None = None) -> int:
+    """Report whether the saved SmartThings session is still signed in (creates nothing)."""
+    from .smartthings_pat import check_session
+
+    parser, paths = _setup("Check the saved SmartThings session")
+    args = parser.parse_args(argv)
+    valid = check_session(resolve(args.session, paths.base), headless=not args.no_headless)
+    print("Saved session is signed in" if valid else "Saved session is NOT signed in")
+    return 0 if valid else 1
+
+
 def main(argv: list[str] | None = None) -> int:
-    """`python main.py` runs the service; `python main.py pat|food|kics` runs one tool."""
+    """`python main.py` runs the service; `python main.py pat|food|kics|session` runs one tool."""
     from .app import serve
 
     argv = list(sys.argv[1:] if argv is None else argv)
-    tools = {"pat": pat_main, "food": food_main, "kics": kics_main}
+    tools = {"pat": pat_main, "food": food_main, "kics": kics_main, "session": session_main}
     if argv and argv[0] in tools:
         return tools[argv[0]](argv[1:])
     return serve(Paths())

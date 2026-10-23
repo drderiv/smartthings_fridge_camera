@@ -39,6 +39,8 @@ Edit `config.json`:
 | `port`, `bind_address` | Where to listen. The default `127.0.0.1` is reachable only from this machine. Use this machine's LAN/VPN address (or `0.0.0.0`) if Home Assistant runs elsewhere. |
 | `api_key` | Shared secret clients send as `Authorization: Bearer <key>`. **Required when `bind_address` is not loopback**; the service refuses to start otherwise. Generate one with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`. |
 | `*_interval_*` | Rotation intervals. Defaults suit the token lifetimes above. |
+| `headless` | `true` (default) runs the browser without a window. Samsung is more likely to show a CAPTCHA to a headless browser; set `false` and start the service under a virtual display (`sudo apt install xvfb`, then `xvfb-run -a .venv/bin/python main.py`) to make it behave like a normal browser. |
+| `session_keepalive_minutes` | `0` (default) is off. A positive number makes the rotator check the saved SmartThings session that often (no password, no PAT created), which keeps an idle-timeout session alive and logs a warning as soon as it is no longer signed in, long before the PAT expires. |
 | `location_id` | Optional. Your fridge's SmartThings location ID, served at `/location_id`. Edits apply without a restart. |
 | `kics_refresh_token` | Optional. Seeds the KICS refresh token if you already have one. |
 
@@ -80,9 +82,10 @@ cd tools/pat_rotator
 
 With `device`, approve the prompt on your phone/tablet; with `sms`, type the code. When the new PAT is written, the service notices and resumes by itself. If the code prompt went to a tablet, a screenshot of it is saved as `samsung_2fa_prompt.png` next to the scripts.
 
-Other one-off commands (same as `main.py pat|food|kics`):
+Other one-off commands (same as `main.py pat|food|kics|session`):
 
 ```bash
+.venv/bin/python main.py session          # is the saved SmartThings session still signed in? (creates nothing)
 .venv/bin/python generate_food_token.py
 .venv/bin/python generate_kics_token.py --login          # first-time KICS bootstrap from the saved session
 .venv/bin/python generate_kics_token.py --refresh-now

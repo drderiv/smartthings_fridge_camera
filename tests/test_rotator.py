@@ -12,7 +12,7 @@ import pytest
 from tools.pat_rotator.rotator.config import Config, read_location_id
 from tools.pat_rotator.rotator.errors import ConfigError, InteractiveAuthRequired, NotReady
 from tools.pat_rotator.rotator.files import Paths, read_token, token_mtime, write_secret
-from tools.pat_rotator.rotator.scheduler import Job, retry_delay, run_job
+from tools.pat_rotator.rotator.scheduler import Job, retry_delay, run_job, run_periodic
 from tools.pat_rotator.rotator.server import TokenServer
 
 
@@ -239,3 +239,41 @@ def test_failed_rotations_back_off_and_success_resets(tmp_path):
     gaps = [b - a for a, b in zip(stamps, stamps[1:])]
     assert len(stamps) == 4
     assert gaps[0] < gaps[1] <= 0.25 and gaps[2] <= 0.3        # 0.05 -> 0.1 -> 0.2 (capped)
+
+
+def test_headless_and_keepalive_options(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"samsung_email": "e@x.y", "samsung_password": "p"}))
+    cfg = Config.from_file(path)
+    assert cfg.headless is True and cfg.session_keepalive_minutes == 0
+
+    path.write_text(json.dumps({"samsung_email": "e@x.y", "samsung_password": "p",
+                                "headless": False, "session_keepalive_minutes": 20}))
+    cfg = Config.from_file(path)
+    assert cfg.headless is False and cfg.session_keepalive_minutes == 20
+
+
+def test_periodic_check_logs_only_changes_and_survives_errors(caplog):
+    import logging
+
+    results = iter([True, True, False, False, RuntimeError("chromium crashed"), True])
+    calls = []
+
+    def action():
+        calls.append(1)
+        outcome = next(results)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    stop = threading.Event()
+    thread = threading.Thread(target=run_periodic, args=("Session", 0.02, action, stop, threading.Lock()), daemon=True)
+    with caplog.at_level(logging.INFO):
+        thread.start()
+        deadline = time.monotonic() + 3
+        while len(calls) < 6 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        stop.set()
+        thread.join(timeout=2)
+    messages = [r.getMessage() for r in caplog.records if r.name == "rotator.scheduler"]
+    assert messages == ["Session: OK", "Session: NOT OK", "Session: check failed: chromium crashed", "Session: OK"]

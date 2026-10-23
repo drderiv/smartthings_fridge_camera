@@ -8,5 +8,7 @@
   "rotation_interval_hours": 23,
   "food_rotation_interval_days": 28,
   "kics_rotation_interval_hours": 23,
-  "location_id": "YOUR_SMARTTHINGS_LOCATION_ID_OPTIONAL"
+  "location_id": "YOUR_SMARTTHINGS_LOCATION_ID_OPTIONAL",
+  "headless": true,
+  "session_keepalive_minutes": 0
 }

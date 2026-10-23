@@ -79,6 +79,31 @@ def generate_pat(
             raise
 
 
+def check_session(session_file: Path, *, headless: bool = True) -> bool:
+    """True if the saved SmartThings session is still signed in (no password, no PAT created).
+
+    A valid session is saved back, which also lets the server's idle timer slide.
+    """
+    if not session_file.exists():
+        return False
+    with browser_context(headless, session_file) as context:
+        page = context.new_page()
+        try:
+            page.goto(TOKENS_URL, timeout=60_000)
+            page.wait_for_selector(SIGNIN_OR_TOKENS, timeout=45_000)
+        except PlaywrightError as err:
+            _LOGGER.debug("Session check could not load the tokens page: %s", err)
+            return False
+
+        def on_tokens_page() -> bool:
+            return page.locator(GENERATE_BUTTON).first.is_visible()
+
+        if on_tokens_page() or wait_for(page, on_tokens_page, SESSION_SETTLE_TIMEOUT_S):
+            save_session(context, session_file)
+            return True
+        return False
+
+
 def _create_token(page: Page, token_name: str) -> str:
     page.locator(GENERATE_BUTTON).first.click()
     field = _wait_visible(page, NAME_FIELDS, 15)

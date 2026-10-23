@@ -11,7 +11,7 @@ from logging.handlers import RotatingFileHandler
 from .config import Config
 from .errors import ConfigError
 from .files import Paths
-from .scheduler import Job, run_job
+from .scheduler import Job, run_job, run_periodic
 from .server import TokenServer
 
 _LOGGER = logging.getLogger("rotator")
@@ -39,19 +39,19 @@ def build_jobs(cfg: Config, paths: Paths) -> list[Job]:
             "SmartThings PAT", paths.pat, cfg.pat_interval_s,
             lambda: smartthings_pat.generate_pat(
                 cfg.email, cfg.password, paths.pat, paths.session,
-                two_factor_method=cfg.two_factor_method, headless=True,
+                two_factor_method=cfg.two_factor_method, headless=cfg.headless,
             ),
         ),
         Job(
             "Samsung Food token", paths.food, cfg.food_interval_s,
             lambda: samsung_food.generate_food_token(
-                cfg.email, cfg.password, paths.food, paths.session, headless=True
+                cfg.email, cfg.password, paths.food, paths.session, headless=cfg.headless
             ),
             retry_s=3600,
         ),
         Job(
             "KICS token", paths.kics, cfg.kics_interval_s,
-            lambda: kics.ensure(paths, seed_refresh_token=cfg.kics_refresh_token, headless=True),
+            lambda: kics.ensure(paths, seed_refresh_token=cfg.kics_refresh_token, headless=cfg.headless),
         ),
     ]
 
@@ -79,6 +79,22 @@ def serve(paths: Paths | None = None) -> int:
         threading.Thread(target=run_job, args=(job, stop, browser_lock), name=job.name, daemon=True)
         for job in build_jobs(cfg, paths)
     ]
+
+    if cfg.session_keepalive_minutes > 0:
+        from . import smartthings_pat
+
+        threads.append(threading.Thread(
+            target=run_periodic,
+            args=(
+                "SmartThings session",
+                cfg.session_keepalive_minutes * 60,
+                lambda: smartthings_pat.check_session(paths.session, headless=cfg.headless),
+                stop,
+                browser_lock,
+            ),
+            name="session-keepalive",
+            daemon=True,
+        ))
 
     server = TokenServer(cfg, paths)
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown).start())

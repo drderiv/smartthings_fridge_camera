@@ -90,3 +90,30 @@ def run_job(job: Job, stop: threading.Event, browser_lock: threading.Lock) -> No
         if token_mtime(job.token_path) == mtime:
             # Action reported success without writing a new token; don't spin.
             stop.wait(job.retry_s)
+
+
+def run_periodic(
+    name: str,
+    interval_s: float,
+    action: Callable[[], bool],
+    stop: threading.Event,
+    browser_lock: threading.Lock,
+) -> None:
+    """Call ``action`` every ``interval_s`` until ``stop`` is set (the first call after one interval).
+
+    ``action`` returns True when the thing it checks is healthy. Only changes are logged
+    at INFO/WARNING, so a healthy check every few minutes stays quiet.
+    """
+    healthy: bool | None = None
+    while not stop.wait(interval_s):
+        try:
+            with browser_lock:
+                now_healthy = action()
+        except Exception as err:  # noqa: BLE001 - a failed check must never kill the thread
+            _LOGGER.warning("%s: check failed: %s", name, err)
+            continue
+        if now_healthy and healthy is not True:
+            _LOGGER.info("%s: OK", name)
+        elif not now_healthy and healthy is not False:
+            _LOGGER.warning("%s: NOT OK", name)
+        healthy = now_healthy
