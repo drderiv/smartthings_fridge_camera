@@ -2,6 +2,10 @@
 
 Running log of changes that need user action when upgrading from v1.x. Add an entry whenever a change alters behavior, configuration, or stored data.
 
+## Requirements
+
+- **Home Assistant 2024.11.0 or newer** (`hacs.json` previously said 2024.1.0, but the config flow already needed 2024.11 APIs such as `_get_reauth_entry`). The integration now also relies on `OptionsFlow.config_entry`, typed `entry.runtime_data` and Python 3.12 syntax. It is developed and tested against the current Home Assistant release only; older versions between 2024.11 and today are untested.
+
 ## Token rotator (`tools/pat_rotator`)
 
 - **Listens on `127.0.0.1` by default** (it used to listen on all interfaces). If Home Assistant runs on another machine, add `"bind_address": "<this machine's LAN/VPN IP>"` (or `"0.0.0.0"`) to the rotator's `config.json`.
