@@ -24,6 +24,7 @@ Running log of changes that need user action when upgrading from v1.x. Add an en
 - **Start command unchanged** (`python main.py`); the three `generate_*.py` scripts remain as thin wrappers (same as `main.py pat|food|kics`). Importing functions from the old modules no longer works.
 - **One browser at a time.** The PAT, Food and KICS jobs no longer launch Chromium concurrently or race on the shared session file.
 - **Rotation schedule follows the token file's age**, so a token refreshed by hand is picked up immediately. After Samsung demands 2FA/CAPTCHA, automatic attempts pause until the token file changes (no more retries every 10 minutes).
+- **Failed rotations back off** (10 min, 20 min, 40 min ... capped at 4 h) instead of retrying every 10 minutes forever, so a changed Samsung login page can't trigger dozens of automated logins overnight.
 - **`next_rotation_at` honors your configured intervals** (the PAT value used to be fixed at 23 h regardless of `rotation_interval_hours`).
 - **`/food_token` no longer falls back to the KICS token** (it used to serve one for the other). `/kics_token` still falls back to the old `active_bearer_token.txt` name.
 - **Samsung Food token is only saved if Whisk accepts it.** Previously an unvalidated "first captured" value could be written.

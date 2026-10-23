@@ -93,6 +93,10 @@ Other one-off commands (same as `main.py pat|food|kics`):
 
 The SmartThings tokens page can display a live PAT, so failure screenshots/HTML are **off by default**. Start the service (or script) with `PAT_ROTATOR_KEEP_DEBUG=1` to write `smartthings_pat_error.png/.html` (owner-only) next to the scripts, and delete them afterwards.
 
+## If a rotation fails
+
+Failures are retried with backoff (10 min, 20 min, 40 min ... up to every 4 h) and logged as `rotation failed (attempt N)`. If Samsung asks for 2FA or a CAPTCHA the job pauses instead (see above) until its token file changes.
+
 ## Files
 
 All state lives in this folder, with owner-only permissions: `config.json`, `smartthings_pat.txt`, `samsung_food_token.txt`, `kics_food_token.txt`, `kics_refresh_token.txt`, `smartthings_session.json` (your Samsung login cookies — treat like a password), `rotator.log`.

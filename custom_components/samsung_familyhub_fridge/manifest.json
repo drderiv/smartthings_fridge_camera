@@ -13,5 +13,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/drderiv/smartthings_fridge_camera/issues",
   "requirements": [],
-  "version": "1.1.4"
+  "version": "2.0.0"
 }

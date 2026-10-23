@@ -24,7 +24,13 @@ class Job:
     token_path: Path
     interval_s: float
     action: Callable[[], object]
-    retry_s: float = 600
+    retry_s: float = 600              # delay after the first failure; doubles on each further failure
+    max_retry_s: float = 4 * 3600     # ...up to this, so a broken login is never hammered
+
+
+def retry_delay(failures: int, base_s: float, cap_s: float) -> float:
+    """Seconds to wait after the ``failures``-th consecutive failure (1, 2, 4, ... times ``base_s``)."""
+    return min(base_s * 2 ** max(failures - 1, 0), cap_s)
 
 
 def run_job(job: Job, stop: threading.Event, browser_lock: threading.Lock) -> None:
@@ -37,6 +43,7 @@ def run_job(job: Job, stop: threading.Event, browser_lock: threading.Lock) -> No
     """
     halted = False
     halted_mtime: float | None = None  # token file mtime when we halted (None: no file)
+    failures = 0
     while not stop.is_set():
         mtime = token_mtime(job.token_path)
 
@@ -71,10 +78,15 @@ def run_job(job: Job, stop: threading.Event, browser_lock: threading.Lock) -> No
             stop.wait(NOT_READY_RETRY_S)
             continue
         except Exception as err:  # noqa: BLE001 - a rotation failure must never kill the thread
-            _LOGGER.error("%s: rotation failed: %s", job.name, err)
-            stop.wait(job.retry_s)
+            failures += 1
+            delay = retry_delay(failures, job.retry_s, job.max_retry_s)
+            _LOGGER.error(
+                "%s: rotation failed (attempt %d): %s. Retrying in %.0f min.", job.name, failures, err, delay / 60
+            )
+            stop.wait(delay)
             continue
 
+        failures = 0
         if token_mtime(job.token_path) == mtime:
             # Action reported success without writing a new token; don't spin.
             stop.wait(job.retry_s)

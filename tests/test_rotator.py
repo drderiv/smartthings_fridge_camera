@@ -12,7 +12,7 @@ import pytest
 from tools.pat_rotator.rotator.config import Config, read_location_id
 from tools.pat_rotator.rotator.errors import ConfigError, InteractiveAuthRequired, NotReady
 from tools.pat_rotator.rotator.files import Paths, read_token, token_mtime, write_secret
-from tools.pat_rotator.rotator.scheduler import Job, run_job
+from tools.pat_rotator.rotator.scheduler import Job, retry_delay, run_job
 from tools.pat_rotator.rotator.server import TokenServer
 
 
@@ -216,3 +216,26 @@ def test_failure_retries_after_delay_and_not_ready_is_quiet(tmp_path):
         raise NotReady("no refresh token")
 
     run_briefly(Job("t", token, 3600, not_ready), seconds=0.3)
+
+
+def test_retry_delay_doubles_and_is_capped():
+    assert [retry_delay(n, 600, 4 * 3600) for n in (1, 2, 3, 4, 5, 6, 7)] == [
+        600, 1200, 2400, 4800, 9600, 14400, 14400,
+    ]
+
+
+def test_failed_rotations_back_off_and_success_resets(tmp_path):
+    token = tmp_path / "t.txt"
+    stamps = []
+    outcomes = iter([False, False, False, True])
+
+    def action():
+        stamps.append(time.monotonic())
+        if not next(outcomes):
+            raise RuntimeError("samsung changed its login page")
+        write_secret(token, "ok")
+
+    run_briefly(Job("t", token, 3600, action, retry_s=0.05, max_retry_s=0.2), seconds=0.9)
+    gaps = [b - a for a, b in zip(stamps, stamps[1:])]
+    assert len(stamps) == 4
+    assert gaps[0] < gaps[1] <= 0.25 and gaps[2] <= 0.3        # 0.05 -> 0.1 -> 0.2 (capped)
