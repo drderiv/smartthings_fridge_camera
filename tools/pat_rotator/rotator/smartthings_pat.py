@@ -18,6 +18,7 @@ from .samsung_login import CAPTCHA_HINTS, Prompt, VERIFICATION_HINTS, is_interac
 _LOGGER = logging.getLogger("rotator.pat")
 
 TOKENS_URL = "https://account.smartthings.com/tokens"
+SESSION_SETTLE_TIMEOUT_S = 15
 GENERATE_BUTTON = "button:has-text('Generate new token'), a:has-text('Generate new token')"
 SIGNIN_OR_TOKENS = (
     "input#account, input#iptLgnPlnID, input#signInId, input[type='email'], " + GENERATE_BUTTON
@@ -55,7 +56,9 @@ def generate_pat(
             def on_tokens_page() -> bool:
                 return page.locator(GENERATE_BUTTON).first.is_visible()
 
-            if on_tokens_page():
+            # The page can show a sign-in form for a moment before it recognises a valid session;
+            # give it time to settle, because a needless password login risks a CAPTCHA.
+            if on_tokens_page() or wait_for(page, on_tokens_page, SESSION_SETTLE_TIMEOUT_S):
                 _LOGGER.info("Signed in with the saved session")
             else:
                 _LOGGER.info("No active session; signing in to Samsung")

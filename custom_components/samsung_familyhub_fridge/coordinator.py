@@ -72,7 +72,9 @@ class FridgeCoordinator(DataUpdateCoordinator[None]):
         if found is None:
             self._pat_expires_at = now + PAT_RETRY_DELAY
             return False
-        self._pat_expires_at = found.next_rotation_at or now + PAT_FALLBACK_LIFETIME
+        # If the rotator's rotation time has already passed (it is stuck or retrying), look again
+        # in a few minutes rather than on every poll.
+        self._pat_expires_at = max(found.next_rotation_at or now + PAT_FALLBACK_LIFETIME, now + PAT_RETRY_DELAY)
         if found.token == self.hub.token:
             return False
         _LOGGER.info("Picked up a fresh SmartThings PAT from the rotator")

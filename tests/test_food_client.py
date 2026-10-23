@@ -221,3 +221,15 @@ async def test_coordinator_retries_with_newer_pat_after_auth_error(hass, session
     await coordinator._async_update_data()
 
     assert api.token == "new_token" and calls["n"] == 2
+
+
+async def test_overdue_rotation_time_does_not_cause_a_rotator_request_every_poll(hass, session, mocked):
+    coordinator, api, _entry = _pat_coordinator(hass, session, "same-token")
+    mocked.get(f"{ROTATOR_URL}/pat", payload={"token": "same-token", "next_rotation_at": int(time.time()) - 3600})
+
+    await coordinator._async_update_data()
+    assert mocked.count("/pat") == 1
+    for _ in range(3):                                  # the next polls reuse the answer for a few minutes
+        await coordinator._async_update_data()
+    assert mocked.count("/pat") == 1
+    assert coordinator._pat_expires_at >= time.time() + 290
