@@ -6,12 +6,13 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 
 from .auth import AuthError, refresh_samsung_iot_token
 from .const import CID, DEFAULT_TIMEOUT
+from .models import DeviceList, DeviceStatus
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,8 +52,8 @@ class FamilyHub:
         self._device_id = device_id
         self.token = token
         self._headers = {"Authorization": f"Bearer {token}"}
-        self._device_status: dict[str, Any] | None = None
-        self._current_device_status: dict[str, Any] | None = None
+        self._device_status: DeviceList | None = None
+        self._current_device_status: DeviceStatus | None = None
         self.last_closed: str | None = None
         self.should_update = False
         self.downloaded_images: list[bytes | None] = [None, None, None]
@@ -116,6 +117,8 @@ class FamilyHub:
 
     async def _do_samsung_iot_refresh(self) -> None:
         """Refresh the Samsung IoT token in place and report the rotated refresh token."""
+        if not self._samsung_iot_refresh_token:
+            raise AuthenticationError("No Samsung IoT refresh token available")
         try:
             credentials = await refresh_samsung_iot_token(
                 self._session, self._samsung_iot_refresh_token, self._samsung_iot_auth_server
@@ -191,14 +194,15 @@ class FamilyHub:
             _LOGGER.error("SmartThings %s returned an error: %s", what, data["error"])
         return data
 
-    async def get_all_device_status(self) -> Any:
+    async def get_all_device_status(self) -> DeviceList:
         """Get all of the devices in the account."""
-        return await self._get_json(f"{CLIENT_URL}/devices/status", "device list")
+        return cast(DeviceList, await self._get_json(f"{CLIENT_URL}/devices/status", "device list"))
 
-    async def get_current_device_status(self) -> Any:
+    async def get_current_device_status(self) -> DeviceStatus:
         """Get the current device status."""
-        return await self._get_json(
-            f"{API_URL}/devices/{self.device_id}/components/main/status", "device status"
+        return cast(
+            DeviceStatus,
+            await self._get_json(f"{API_URL}/devices/{self.device_id}/components/main/status", "device status"),
         )
 
     async def get_location_id(self) -> str | None:
@@ -250,14 +254,14 @@ class FamilyHub:
 
     # --- status handling --------------------------------------------------------------
 
-    def set_device_status(self, status: Any) -> None:
+    def set_device_status(self, status: DeviceList | None) -> None:
         """Update the device list if the payload is valid."""
         if not status or not isinstance(status, dict) or "error" in status:
             return
         self._device_status = status
         self.set_device_id()
 
-    def set_current_device_status(self, status: Any) -> None:
+    def set_current_device_status(self, status: DeviceStatus | None) -> None:
         """Update the current device status if the payload is valid."""
         if not status or not isinstance(status, dict) or "error" in status:
             return

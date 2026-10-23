@@ -71,8 +71,8 @@ class RotatorClient:
 
     async def fetch_token(self, path: str) -> RotatorToken | None:
         """Fetch a single-token endpoint such as /pat, /kics_token or /food_token."""
-        payload = await self.get_json(path)
-        token = str((payload or {}).get("token") or "").strip()
+        payload = await self.get_json(path) or {}
+        token = str(payload.get("token") or "").strip()
         if not token:
             return None
         next_rotation = payload.get("next_rotation_at")

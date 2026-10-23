@@ -26,3 +26,13 @@ jobs:
       - run: >
           docker run --rm -v "$PWD":/repo -w /repo fridge-ha-tests
           python -m pytest -c tests_ha/pytest.ini --rootdir=/repo tests_ha -q
+
+  typing:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t fridge-ha-tests -f tests_ha/Dockerfile .
+      - run: >
+          docker run --rm -v "$PWD":/repo -w /repo fridge-ha-tests
+          sh -c "pip install -q mypy && mypy --cache-dir=/tmp/mypy custom_components/samsung_familyhub_fridge"

@@ -20,3 +20,4 @@ config.json
 samsung_2fa_prompt.png
 smartthings_pat_error.*
 *.tmp
+.mypy_cache/

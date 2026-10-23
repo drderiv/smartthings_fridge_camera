@@ -127,7 +127,7 @@ async def _exchange_code(
     return credentials, None
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
     """Handle a config flow for Samsung FamilyHub Fridge."""
 
     VERSION = 2
@@ -200,7 +200,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if credentials is not None:
                     self._standalone_refresh_token = credentials.refresh_token
                     return await self.async_step_standalone_oauth_samsung()
-                errors[FIELD_REDIRECT] = error
+                errors[FIELD_REDIRECT] = error or "code_exchange_failed"
 
         return self.async_show_form(
             step_id="standalone_oauth_link",
@@ -378,7 +378,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             CONF_OAUTH_REFRESH_TOKEN: credentials.refresh_token,
                         },
                     )
-                errors[FIELD_REDIRECT] = error
+                errors[FIELD_REDIRECT] = error or "code_exchange_failed"
 
         return self.async_show_form(
             step_id="reauth_standalone_oauth_link",

@@ -34,7 +34,7 @@ class FamilyHubFoodCircleView(HomeAssistantView):
         self.cache_dir = Path(cache_dir)
         self.secret = secret
 
-    async def get(self, request: web.Request, filename: str) -> web.Response:
+    async def get(self, request: web.Request, filename: str) -> web.StreamResponse:
         """Serve a food circle thumbnail."""
         # 1. Allow-list the filename (blocks traversal and anything but cached crops)
         if not self._FILENAME_RE.fullmatch(filename):

@@ -9,7 +9,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 from homeassistant.core import HomeAssistant
@@ -24,6 +24,7 @@ from .const import (
     KICS_SA_AUTH_URL,
     WHISK_FOODLIST_API,
 )
+from .models import FoodItem, Inventory
 from .rotator import RotatorClient
 from .views import generate_food_circle_sig
 
@@ -43,7 +44,7 @@ WHISK_MIN_TOKEN_LENGTH = 35
 MIN_IMAGE_BYTES = 100
 TIMESTAMP_MS_THRESHOLD = 10_000_000_000
 IMAGE_URL_PATH = "/api/samsung_familyhub/food_circles"
-EMPTY_INVENTORY: dict[str, Any] = {"total_items": 0, "last_synced": None, "items": []}
+EMPTY_INVENTORY: Inventory = {"total_items": 0, "last_synced": None, "items": []}
 
 
 def split_bearer(token: str) -> tuple[str, str]:
@@ -96,7 +97,7 @@ class FoodImageCache:
         except OSError:
             return set()
 
-    def store(self, downloaded: dict[str, bytes], keep: set[str], inventory: dict[str, Any] | None) -> None:
+    def store(self, downloaded: dict[str, bytes], keep: set[str], inventory: Inventory | None) -> None:
         """Write new images, delete images no longer in the inventory, save the inventory."""
         for name, content in downloaded.items():
             try:
@@ -117,12 +118,12 @@ class FoodImageCache:
             except OSError as err:
                 _LOGGER.debug("Could not persist inventory to disk: %s", err)
 
-    def load_inventory(self) -> dict[str, Any] | None:
+    def load_inventory(self) -> Inventory | None:
         try:
             data = json.loads((self.directory / "inventory.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
-        return data if isinstance(data, dict) and data.get("items") else None
+        return cast(Inventory, data) if isinstance(data, dict) and data.get("items") else None
 
 
 class SamsungFoodClient:
@@ -147,7 +148,7 @@ class SamsungFoodClient:
         self._configured_token = token
         self._location_id = location_id
         self._location_lookup = location_lookup
-        self._cached_inventory: dict[str, Any] | None = None
+        self._cached_inventory: Inventory | None = None
         self._cached_kics_token: str | None = None
         self._kics_expires_at = 0.0
         self._cached_whisk_token: str | None = None
@@ -237,12 +238,12 @@ class SamsungFoodClient:
             return self._location_id.strip()
         if self._location_lookup is not None:
             try:
-                location = await self._location_lookup()
+                from_smartthings = await self._location_lookup()
             except (aiohttp.ClientError, TimeoutError, ValueError, KeyError) as err:
                 _LOGGER.debug("Could not read locationId from SmartThings: %s", err)
             else:
-                if location:
-                    self._location_id = location.strip()
+                if from_smartthings:
+                    self._location_id = from_smartthings.strip()
                     return self._location_id
         payload = await self._rotator.get_json("/location_id") or {}
         location = str(payload.get("location_id") or "").strip()
@@ -314,7 +315,7 @@ class SamsungFoodClient:
 
     async def _async_parse_kics_items(
         self, items: list[dict[str, Any]], stock: dict[str, str]
-    ) -> tuple[list[dict[str, Any]], dict[str, bytes], set[str]]:
+    ) -> tuple[list[FoodItem], dict[str, bytes], set[str]]:
         """Turn KICS items into inventory entries, caching crops locally and signing their URLs.
 
         Returns (entries, newly downloaded images, filenames to keep). The last two are empty
@@ -324,7 +325,7 @@ class SamsungFoodClient:
         caching = await run(self._images.ensure_directory)
         existing = await run(self._images.cached_names) if caching else set()
 
-        entries: list[tuple[dict[str, Any], str | None]] = []
+        entries: list[tuple[FoodItem, str | None]] = []
         to_download: dict[str, str] = {}
         keep: set[str] = set()
         for item in items:
@@ -332,8 +333,9 @@ class SamsungFoodClient:
             item_id = item.get("id", "")
             name = content.get("name") or "Unnamed Food Item"
             remote = content.get("imageUrl") or stock.get(item_id) or stock.get(name.lower())
-            filename = FoodImageCache.filename(item_id, remote) if remote and caching else None
-            if filename:
+            filename = None
+            if remote and caching:
+                filename = FoodImageCache.filename(item_id, remote)
                 keep.add(filename)
                 if filename not in existing:
                     to_download[filename] = remote
@@ -353,24 +355,25 @@ class SamsungFoodClient:
 
         downloaded = await self._async_download_images(to_download) if to_download else {}
         available = existing | set(downloaded)
-        parsed = []
+        parsed: list[FoodItem] = []
         for entry, filename in entries:
             if filename and filename in available:
                 entry["image_url"] = self._images.url(filename)
             parsed.append(entry)
         return parsed, (downloaded if caching else {}), (keep & available if caching else set())
 
-    def _result(self, items: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
-        result = {
+    def _result(self, items: list[FoodItem], source: str | None = None) -> Inventory:
+        result: Inventory = {
             "total_items": len(items),
             "last_synced": datetime.now(timezone.utc).isoformat(),
             "items": items,
-            **extra,
         }
+        if source:
+            result["source"] = source
         self._cached_inventory = result
         return result
 
-    async def _async_fetch_kics(self, token: str, location_id: str) -> tuple[dict[str, Any] | None, str | None]:
+    async def _async_fetch_kics(self, token: str, location_id: str) -> tuple[Inventory | None, str | None]:
         """(inventory, error) from the KICS EPA food list, with retries for gateway errors."""
         auth, _raw = split_bearer(token)
         headers = {
@@ -419,7 +422,7 @@ class SamsungFoodClient:
             break
         return None, error
 
-    async def _async_fetch_whisk(self, token: str) -> dict[str, Any]:
+    async def _async_fetch_whisk(self, token: str) -> Inventory:
         """Legacy path: page through the Whisk food list."""
         headers = self._whisk_headers(token)
         all_items: list[dict[str, Any]] = []
@@ -454,7 +457,7 @@ class SamsungFoodClient:
             if not all_items:
                 raise UpdateFailed(f"Failed to fetch Samsung Food items: {error}")
 
-        active = []
+        active: list[FoodItem] = []
         for item in all_items:
             content = item.get("content", {})
             status = content.get("presence_status", "")
@@ -469,7 +472,7 @@ class SamsungFoodClient:
         _LOGGER.info("SamsungFoodClient: %d active items (of %d in the account)", len(active), len(all_items))
         return self._result(active)
 
-    async def _async_fetch_food_items(self, token: str) -> dict[str, Any]:
+    async def _async_fetch_food_items(self, token: str) -> Inventory:
         """KICS EPA live circles first; legacy Whisk only for long Whisk-style tokens."""
         if self._cached_inventory is None:
             await self._async_load_cached_inventory()
@@ -492,19 +495,19 @@ class SamsungFoodClient:
             raise UpdateFailed(f"KICS EPA food circles fetch failed: {error or 'unknown error'}")
         return await self._async_fetch_whisk(token)
 
-    async def async_get_active_food_items(self) -> dict[str, Any]:
+    async def async_get_active_food_items(self) -> Inventory:
         token = await self.async_get_token()
         if not token:
             if self._cached_inventory is None:
                 await self._async_load_cached_inventory()
-            return self._cached_inventory or dict(EMPTY_INVENTORY)
+            return self._cached_inventory or Inventory(**EMPTY_INVENTORY)
         try:
             return await self._async_fetch_food_items(token)
         finally:
             await self._async_persist_cache()
 
 
-class SamsungFoodCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+class SamsungFoodCoordinator(DataUpdateCoordinator[Inventory]):
     """Polls the food inventory and refreshes shortly after the door closes."""
 
     def __init__(
@@ -524,7 +527,7 @@ class SamsungFoodCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.client = client
         self._delay_task: asyncio.Task[None] | None = None
 
-    async def _async_update_data(self) -> dict[str, Any]:
+    async def _async_update_data(self) -> Inventory:
         try:
             return await self.client.async_get_active_food_items()
         except UpdateFailed:
