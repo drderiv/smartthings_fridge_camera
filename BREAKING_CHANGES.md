@@ -44,6 +44,11 @@ The rotator (set under **Configure → Rotator URL / API key**) is now the singl
 
 New (non-breaking): last-known KICS/Whisk tokens and the location ID are cached in `.storage/samsung_familyhub_fridge.token_cache` so a brief rotator outage during an HA restart doesn't stop the food sensor.
 
+## Integration — polling
+
+- **SmartThings status is now polled every 60 seconds by default** (it used to be every 10 s, hard-coded). Set **Configure → Fridge status poll interval** (10–3600 s) to change it. A longer interval means door-close detection, and therefore the post-close camera refresh, can lag by up to that long.
+- **HTTP 429 (rate limited)** is handled quietly: the poll is skipped and one warning is logged per episode, instead of an error on every poll. Several Home Assistants sharing one token can trip the limit.
+
 ## Log hygiene
 
 - Debug-level details only: location IDs are no longer logged at INFO; response bodies are no longer included in warnings/exception messages.

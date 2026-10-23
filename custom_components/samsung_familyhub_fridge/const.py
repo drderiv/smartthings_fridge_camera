@@ -42,6 +42,10 @@ CONF_ROTATOR_URL = "rotator_url"
 CONF_ROTATOR_API_KEY = "rotator_api_key"
 DEFAULT_ROTATOR_URL = "http://127.0.0.1:8765"
 CONF_FOOD_UPDATE_INTERVAL = "food_update_interval"
+CONF_POLL_INTERVAL = "poll_interval"
+DEFAULT_POLL_INTERVAL = 60  # seconds between SmartThings status polls
+MIN_POLL_INTERVAL = 10
+MAX_POLL_INTERVAL = 3600
 CONF_ENABLE_BOTTOM_CAMERA = "enable_bottom_camera"
 DEFAULT_ENABLE_BOTTOM_CAMERA = False
 

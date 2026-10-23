@@ -556,4 +556,7 @@ except ImportError:
     vol.Schema = lambda *a, **kw: MagicMock()
     vol.Required = lambda *a, **kw: a[0] if a else "required"
     vol.Optional = lambda *a, **kw: a[0] if a else "optional"
+    vol.All = lambda *a, **kw: a
+    vol.Coerce = lambda *a, **kw: a[0] if a else None
+    vol.Range = lambda *a, **kw: None
     sys.modules["voluptuous"] = vol

@@ -27,6 +27,10 @@ from .const import (
     CONF_OAUTH_CLIENT_SECRET,
     CONF_OAUTH_REFRESH_TOKEN,
     CONF_ENABLE_BOTTOM_CAMERA,
+    CONF_POLL_INTERVAL,
+    DEFAULT_POLL_INTERVAL,
+    MAX_POLL_INTERVAL,
+    MIN_POLL_INTERVAL,
     CONF_ROTATOR_API_KEY,
     CONF_ROTATOR_URL,
     CONF_SAMSUNG_IOT_AUTH_SERVER,
@@ -472,6 +476,11 @@ class SamsungFamilyHubOptionsFlow(config_entries.OptionsFlow):
             or data.get(CONF_FOOD_UPDATE_INTERVAL)
             or DEFAULT_FOOD_UPDATE_INTERVAL
         )
+        poll_interval = int(
+            options.get(CONF_POLL_INTERVAL)
+            or data.get(CONF_POLL_INTERVAL)
+            or DEFAULT_POLL_INTERVAL
+        )
         enable_bottom = bool(
             options.get(CONF_ENABLE_BOTTOM_CAMERA)
             if CONF_ENABLE_BOTTOM_CAMERA in options
@@ -484,6 +493,9 @@ class SamsungFamilyHubOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CONF_ROTATOR_API_KEY, default=rotator_api_key): str,
                 vol.Optional(CONF_LOCATION_ID, default=location_id): str,
                 vol.Optional(CONF_FOOD_UPDATE_INTERVAL, default=food_interval): int,
+                vol.Optional(CONF_POLL_INTERVAL, default=poll_interval): vol.All(
+                    vol.Coerce(int), vol.Range(min=MIN_POLL_INTERVAL, max=MAX_POLL_INTERVAL)
+                ),
                 vol.Optional(CONF_ENABLE_BOTTOM_CAMERA, default=enable_bottom): bool,
             }
         )

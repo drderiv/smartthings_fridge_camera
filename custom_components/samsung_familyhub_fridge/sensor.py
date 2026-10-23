@@ -16,7 +16,9 @@ from .const import (
     CONF_LOCATION_ID,
     CONF_ROTATOR_URL,
     CONF_FOOD_UPDATE_INTERVAL,
+    CONF_POLL_INTERVAL,
     DEFAULT_FOOD_UPDATE_INTERVAL,
+    DEFAULT_POLL_INTERVAL,
 )
 from .api import (
     DataCoordinator,
@@ -34,7 +36,12 @@ async def async_setup_entry(
 ) -> None:
     """Set up Samsung FamilyHub Fridge sensors."""
     hub = hass.data[DOMAIN]["hub"]
-    coordinator = DataCoordinator(hass, hub)
+    poll_interval = int(
+        config_entry.options.get(CONF_POLL_INTERVAL)
+        or config_entry.data.get(CONF_POLL_INTERVAL)
+        or DEFAULT_POLL_INTERVAL
+    )
+    coordinator = DataCoordinator(hass, hub, poll_interval)
     device_id = config_entry.data.get(CONF_DEVICE_ID) or "samsung_familyhub"
     entities: list[SensorEntity] = [LastUpdatedAt(coordinator, device_id)]
 

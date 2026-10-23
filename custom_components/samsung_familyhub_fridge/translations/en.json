@@ -82,6 +82,7 @@
                     "rotator_api_key": "Rotator API key (if the rotator requires one)",
                     "location_id": "Fridge Location ID (optional override)",
                     "food_update_interval": "Food Circles sync interval in seconds",
+                    "poll_interval": "Fridge status poll interval in seconds (10-3600, default 60)",
                     "enable_bottom_camera": "Enable Bottom Camera (for 3-camera fridge models)"
                 }
             }

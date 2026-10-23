@@ -84,3 +84,54 @@ async def test_expired_cached_token_not_restored(client, mock_hass):
     restored._store = client._store
     await restored.async_restore_cache()
     assert restored._cached_kics_token is None
+
+
+# --- polling interval / rate limiting -----------------------------------------
+
+def test_default_poll_interval_is_one_minute():
+    from custom_components.samsung_familyhub_fridge.const import DEFAULT_POLL_INTERVAL
+    from datetime import timedelta
+    from custom_components.samsung_familyhub_fridge.api import DataCoordinator
+
+    coordinator = DataCoordinator(MagicMock(), MagicMock())
+    assert DEFAULT_POLL_INTERVAL == 60
+    assert coordinator.update_interval == timedelta(seconds=60)
+    assert DataCoordinator(MagicMock(), MagicMock(), 30).update_interval == timedelta(seconds=30)
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_skips_poll_without_error_and_recovers(caplog):
+    import logging
+    from custom_components.samsung_familyhub_fridge.api import DataCoordinator, RateLimitError
+
+    hass = MagicMock()
+    api = MagicMock()
+    api.token = "t"
+    api.device_id = "dev"
+    api.should_update = False
+    api.get_file_ids.return_value = []
+
+    async def ensure():
+        return None
+
+    api.async_ensure_fresh_token = ensure
+    calls = {"n": 0}
+
+    async def run_job(func, *a):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise RateLimitError("429")
+        return {}
+
+    hass.async_add_executor_job = run_job
+    coordinator = DataCoordinator(hass, api)
+    coordinator._pat_expires_at = 10**12            # skip the rotator probe
+    coordinator.data = {"kept": True}
+    with caplog.at_level(logging.INFO):
+        assert await coordinator._async_update_data() == {"kept": True}
+        assert await coordinator._async_update_data() == {"kept": True}
+        await coordinator._async_update_data()
+    warnings = [r for r in caplog.records if "rate limiting" in r.getMessage() and r.levelno == logging.WARNING]
+    assert len(warnings) == 1                       # logged once per episode
+    assert any("no longer rate limiting" in r.getMessage() for r in caplog.records)
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]

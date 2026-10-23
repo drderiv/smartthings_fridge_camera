@@ -26,6 +26,7 @@ from .const import (
     CONF_FOOD_TOKEN,
     WHISK_FOODLIST_API,
     DEFAULT_FOOD_UPDATE_INTERVAL,
+    DEFAULT_POLL_INTERVAL,
     KICS_CLIENT_ID,
     KICS_FOODLIST_ENDPOINT,
     KICS_SA_AUTH_URL,
@@ -60,14 +61,24 @@ class AuthenticationError(Exception):
     """Raised when SmartThings API returns an authentication error (401/403)."""
 
 
+class RateLimitError(Exception):
+    """Raised when SmartThings answers HTTP 429 (too many requests)."""
+
+
 class DataCoordinator(DataUpdateCoordinator):
-    def __init__(self, hass: HomeAssistant, api: FamilyHub):
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        api: FamilyHub,
+        poll_interval: int = DEFAULT_POLL_INTERVAL,
+    ):
         super().__init__(
             hass,
             _LOGGER,
             name="File ID refresher",
-            update_interval=timedelta(seconds=10),
+            update_interval=timedelta(seconds=poll_interval),
         )
+        self._rate_limited = False
         self._hass = hass
         self.api = api
         self.last_file_ids = []
@@ -189,6 +200,9 @@ class DataCoordinator(DataUpdateCoordinator):
                 )
             # Reset failure count on success
             self._consecutive_failures = 0
+            if self._rate_limited:
+                self._rate_limited = False
+                _LOGGER.info("SmartThings is no longer rate limiting requests")
         except AuthenticationError as err:
             # Force immediate recovery from rotator
             self._pat_expires_at = 0.0
@@ -218,6 +232,15 @@ class DataCoordinator(DataUpdateCoordinator):
                 "SmartThings token expired or is invalid. "
                 "Please re-authenticate with a new token."
             ) from err
+        except RateLimitError:
+            # Skip this poll quietly; one warning per episode instead of an error every poll.
+            if not self._rate_limited:
+                self._rate_limited = True
+                _LOGGER.warning(
+                    "SmartThings is rate limiting requests (HTTP 429); skipping polls until it "
+                    "clears. A longer poll interval (Configure) or fewer clients on this token helps."
+                )
+            return self.data
         except Exception as err:
             self._consecutive_failures += 1
             if self._consecutive_failures < self._max_consecutive_failures:
@@ -386,6 +409,8 @@ class FamilyHub:
                 f"SmartThings API returned HTTP {response.status_code}. "
                 "Token is expired or invalid."
             )
+        if response.status_code == 429:
+            raise RateLimitError("SmartThings API returned HTTP 429")
         if response.status_code == 400:
             try:
                 body = response.json()
