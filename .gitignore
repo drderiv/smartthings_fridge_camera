@@ -17,3 +17,6 @@ active_bearer_token.txt
 *active_bearer_token.txt
 config.json
 *.log
+samsung_2fa_prompt.png
+smartthings_pat_error.*
+*.tmp

@@ -12,7 +12,6 @@ from custom_components.samsung_familyhub_fridge.const import (
     KICS_SA_AUTH_URL,
 )
 from custom_components.samsung_familyhub_fridge.api import SamsungFoodClient
-from tools.pat_rotator.generate_kics_token import validate_kics_token
 
 
 @pytest.fixture
@@ -156,12 +155,11 @@ def test_samsung_food_client_falls_back_to_stock_photo_when_circle_missing(mock_
         assert result["items"][0]["image_url"] == "https://whisk.com/yogurt_stock.jpg"
 
 
-from tools.pat_rotator.generate_kics_token import (
-    validate_kics_token,
-    refresh_kics_token,
-    rotate_kics_token,
-    AUTH_BASE,
-)
+from tools.pat_rotator.rotator.files import Paths
+from tools.pat_rotator.rotator.kics import AUTH_BASE
+from tools.pat_rotator.rotator.kics import refresh as refresh_kics_token
+from tools.pat_rotator.rotator.kics import rotate as _rotate
+from tools.pat_rotator.rotator.kics import validate_token as validate_kics_token
 
 
 def test_validate_kics_token_helper():
@@ -205,33 +203,23 @@ def test_rotate_kics_token_writes_files(tmp_path):
 
     with requests_mock.Mocker() as m:
         m.post(f"{AUTH_BASE}/auth/oauth2/token", json=mock_token_resp, status_code=200)
-        acc = rotate_kics_token(
-            refresh_token_file=str(ref_file),
-            output_file=str(out_file),
-        )
+        acc = _rotate(Paths(base=tmp_path), output=out_file, refresh_file=ref_file)
         assert acc == "new_access_token_999"
         assert out_file.read_text().strip() == "new_access_token_999"
         assert ref_file.read_text().strip() == "next_rolling_refresh_token_888"
 
 
 def test_resolve_rotator_base_url_hierarchy(mock_hass):
-    """Test resolution order of rotator base URL (options, helper entity, fallback)."""
+    """Test resolution order of rotator base URL (entry options, then default)."""
     from custom_components.samsung_familyhub_fridge.const import (
         DEFAULT_ROTATOR_URL,
-        ROTATOR_URL_ENTITY,
         CONF_ROTATOR_URL,
     )
     # 1. Fallback to default
     client = SamsungFoodClient(mock_hass)
     assert client._resolve_rotator_base_url() == DEFAULT_ROTATOR_URL
 
-    # 2. Helper entity override
-    mock_helper_state = MagicMock()
-    mock_helper_state.state = "http://192.168.1.150:8765"
-    mock_hass.states.get.side_effect = lambda ent: mock_helper_state if ent == ROTATOR_URL_ENTITY else None
-    assert client._resolve_rotator_base_url() == "http://192.168.1.150:8765"
-
-    # 3. Entry options override
+    # 2. Entry options override
     mock_entry = MagicMock()
     mock_entry.options = {CONF_ROTATOR_URL: "http://remote-host:9999/"}
     mock_entry.data = {}

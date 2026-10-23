@@ -3,6 +3,8 @@
   "samsung_password": "YOUR_SAMSUNG_PASSWORD",
   "two_factor_method": "device",
   "port": 8765,
+  "bind_address": "127.0.0.1",
+  "api_key": "",
   "rotation_interval_hours": 23,
   "food_rotation_interval_days": 28,
   "kics_rotation_interval_hours": 23,

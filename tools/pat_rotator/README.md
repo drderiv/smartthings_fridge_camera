@@ -1,224 +1,115 @@
-# Samsung FamilyHub Tri-Token Rotator & Micro-Service
+# Token Rotator
 
-A lightweight, standalone background service that automatically manages and serves:
-1. **SmartThings Personal Access Tokens (PATs)**: Rotated every 23 hours via headless browser automation to handle Samsung's 24-hour token expiry limit.
-2. **Samsung Food (Whisk) Tokens**: Rotated every 28 days via headless browser automation using your saved Samsung account session to keep AI food inventory synced.
-3. **KICS Live Food Circles Tokens**: Provisioned and served to extract live circular camera crops cut from inside the fridge. Uses automated Samsung Web SSO token exchange for initial bootstrapping and autonomous 23-hour rolling OAuth refresh—**no Android emulator, rooting, or network sniffing required**.
+A small service that keeps the credentials the Samsung FamilyHub integration needs fresh, and serves them to Home Assistant over HTTP. It runs on any Linux machine; Home Assistant itself does not need Chromium.
 
-All tokens and refrigerator location data are served to Home Assistant over local REST endpoints.
+| Token | Lifetime | Rotated | How |
+|---|---|---|---|
+| SmartThings PAT | 24 h (hard limit) | every 23 h | headless Chromium signs in to account.smartthings.com/tokens |
+| Samsung Food (Whisk) token | ~30 days | every 28 days | headless Chromium with your saved Samsung session |
+| KICS Food Circles token | 24 h access, 90 d rolling refresh | every 23 h | plain HTTP refresh-token exchange (no browser after the first bootstrap) |
 
----
+## Setup
 
-## Features
-* **Zero External Dependencies**: Completely self-contained in this directory.
-* **Autonomous Rotation Loops**: 
-  - SmartThings PAT rotated every 23 hours.
-  - Samsung Food token rotated every 28 days (and verified on startup).
-  - KICS Live Food Circles access token renewed every 23 hours using a 90-day rolling refresh token.
-  - Automatic zero-touch initial KICS token bootstrapping from saved Samsung session.
-* **Local REST Endpoints**:
-  - `GET http://<SERVER_IP>:8765/pat` ➔ Active PAT with rotation schedule (`token`, `generated_at`, `next_rotation_at`, `ttl_seconds`).
-  - `GET http://<SERVER_IP>:8765/food_token` ➔ Active Samsung Food (Whisk) Token with schedule metadata.
-  - `GET http://<SERVER_IP>:8765/kics_token` ➔ Active KICS Food Circles Token, `location_id`, and schedule metadata.
-  - `GET http://<SERVER_IP>:8765/location_id` ➔ `{"location_id": "<LOCATION_ID>", "status": "ok"}`
-  - `GET http://<SERVER_IP>:8765/tokens` ➔ Combined JSON with all active tokens, location details, and rotation metadata.
-  - `GET http://<SERVER_IP>:8765/health` ➔ Service health and token availability status.
-* **Automated Log Maintenance**: Writes directly to `rotator.log` and automatically trims it every Sunday at midnight to keep only the most recent 100 lines.
-
----
-
-## Installation & Setup (On Any Linux Server)
-
-### 1. Run Setup
 ```bash
 cd tools/pat_rotator
-./setup.sh
+./setup.sh          # venv, dependencies, Chromium, config.json
 ```
 
-### 2. Configure Credentials & 2FA Preferences
 Edit `config.json`:
+
 ```json
 {
-  "samsung_email": "your_samsung_account@example.com",
-  "samsung_password": "your_samsung_password",
+  "samsung_email": "you@example.com",
+  "samsung_password": "…",
   "two_factor_method": "device",
   "port": 8765,
+  "bind_address": "127.0.0.1",
+  "api_key": "",
   "rotation_interval_hours": 23,
   "food_rotation_interval_days": 28,
-  "kics_rotation_interval_hours": 23
+  "kics_rotation_interval_hours": 23,
+  "location_id": "OPTIONAL_SMARTTHINGS_LOCATION_ID"
 }
 ```
 
-#### Configuration Options:
-* `samsung_email` & `samsung_password`: Your Samsung account credentials.
-* `two_factor_method`: Delivery method for Samsung Two-Factor Authentication (2FA) during initial session creation or when session cookies hard-expire:
-  * `"device"` *(default)*: Sends a push notification to your Galaxy phone or tablet. Simply tap **"Yes"** on your device to approve!
-  * `"sms"`: Automatically re-routes the 2FA prompt to your mobile phone via SMS text message and prompts for the 6-digit code in the terminal (recommended if you are travelling or do not use a Galaxy phone).
-* `port`: HTTP server port (default: `8765`).
-* `rotation_interval_hours`: Frequency to generate a fresh PAT (default: `23` hours).
-* `food_rotation_interval_days`: Frequency to refresh Samsung Food token (default: `28` days).
-* `kics_rotation_interval_hours`: Frequency to refresh KICS Food Circles access token (default: `23` hours).
+| Key | Meaning |
+|---|---|
+| `samsung_email`, `samsung_password` | Your Samsung account. Keep `config.json` at mode `0600` (setup.sh does this; the service warns otherwise). |
+| `two_factor_method` | `"device"` (approve on your Galaxy phone/tablet) or `"sms"` (type the code you receive). Only used when Samsung asks for verification. |
+| `port`, `bind_address` | Where to listen. The default `127.0.0.1` is reachable only from this machine. Use this machine's LAN/VPN address (or `0.0.0.0`) if Home Assistant runs elsewhere. |
+| `api_key` | Shared secret clients send as `Authorization: Bearer <key>`. **Required when `bind_address` is not loopback**; the service refuses to start otherwise. Generate one with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`. |
+| `*_interval_*` | Rotation intervals. Defaults suit the token lifetimes above. |
+| `location_id` | Optional. Your fridge's SmartThings location ID, served at `/location_id`. Edits apply without a restart. |
+| `kics_refresh_token` | Optional. Seeds the KICS refresh token if you already have one. |
 
-### 3. Run
+Start it:
+
 ```bash
-# In background / nohup (main.py writes directly to rotator.log):
-nohup .venv/bin/python main.py &
-
-# Or in a screen/tmux session:
-.venv/bin/python main.py
+.venv/bin/python main.py                  # foreground
+nohup .venv/bin/python main.py &          # background; logs go to rotator.log (rotates at 256 KB)
 ```
 
----
+## Home Assistant
 
-## Troubleshooting & Session Maintenance (2FA & Cookie Expiry)
+In **Settings → Devices & Services → Samsung FamilyHub → Configure** set **Rotator URL** (e.g. `http://10.0.0.5:8765`) and, if you set one, **Rotator API key**. Home Assistant reads `/tokens` once at startup and then only when a token reaches its `next_rotation_at` or Samsung returns 401/403. No YAML, REST sensors or helper entities are needed.
 
-### How Sessions Work
-The rotator caches your authenticated browser session to `smartthings_session.json` and updates it on every rotation. Under normal operation, sliding expiration keeps this session active indefinitely without any intervention.
+## HTTP API
 
-### If Samsung Demands Interactive 2FA or CAPTCHA
-If Samsung Account session cookies hard-expire (e.g. after ~30 days or when Samsung updates terms of service), Samsung's identity provider may demand human verification (a push confirmation, an SMS code, or a visual CAPTCHA).
+All endpoints are `GET`; every one except `/health` needs the API key when one is configured.
 
-When running headlessly in the background, automated Chromium cannot guess a 2FA code or solve a picture CAPTCHA. It will log a notice and retry every 10 minutes:
-```text
-[ERROR] Samsung account requires 2FA or device approval, but rotator is running non-interactively in background mode.
-Please run '.venv/bin/python generate_pat.py' interactively in a terminal to authenticate once and refresh smartthings_session.json.
+| Endpoint | Response |
+|---|---|
+| `/pat` | `{"token", "status", "type", "generated_at", "next_rotation_at", "ttl_seconds"}` |
+| `/food_token` | same shape, plus `location_id` |
+| `/kics_token` | same shape, plus `location_id` |
+| `/location_id` | `{"location_id", "status"}`, 404 if unset |
+| `/tokens` | `smartthings_pat`, `samsung_food_token`, `kics_token`, `location_id`, and `pat_`/`food_`/`kics_next_rotation_at` |
+| `/health` | `{"status": "healthy"}` (no key needed, reveals nothing) |
+
+A missing token returns 503 `{"error", "status": "unavailable"}`.
+
+## When Samsung asks for verification
+
+Saved session cookies normally keep everything running unattended. If Samsung demands a 2FA code or CAPTCHA, a headless run can't answer it. The service logs that and **pauses automatic attempts for that token** (to avoid failed-login lockouts) until its token file changes. Refresh the session in a terminal:
+
+```bash
+cd tools/pat_rotator
+.venv/bin/python generate_pat.py                 # add --no-headless to watch the browser
+.venv/bin/python generate_pat.py --2fa-method sms
 ```
 
-### How to Refresh the Session
-1. Open a terminal or screen session in your rotator directory:
-   ```bash
-   cd tools/pat_rotator   # (or ~/smartthings_pat_rotator)
-   .venv/bin/python generate_pat.py
-   ```
-2. **If using `"two_factor_method": "device"`**:
-   Samsung will push a notification to your Galaxy phone or tablet. Simply tap **"Yes"** on your device. The script detects approval within seconds and finishes automatically.
-3. **If using `"two_factor_method": "sms"`**:
-   The script will request an SMS text message to your registered mobile phone and prompt you in the terminal:
-   ```text
-   Enter the 2FA verification code:
-   ```
-   Type the 6-digit code and hit **Enter**.
-4. **If Samsung presents a visual CAPTCHA puzzle**:
-   Run the command with a visible browser UI on a computer with a desktop display:
-   ```bash
-   .venv/bin/python generate_pat.py --no-headless
-   ```
-   *(Alternatively, run it on your local workstation with `--no-headless`, solve the CAPTCHA once, and copy the updated `smartthings_session.json` to your server).*
-5. Once `generate_pat.py` prints `SUCCESS! New PAT: ...`, your session in `smartthings_session.json` is refreshed for another month, and the background service will resume autonomous rotation.
+With `device`, approve the prompt on your phone/tablet; with `sms`, type the code. When the new PAT is written, the service notices and resumes by itself. If the code prompt went to a tablet, a screenshot of it is saved as `samsung_2fa_prompt.png` next to the scripts.
 
-### Diagnostic Screenshots
-Whenever a generation failure occurs, the rotator automatically captures:
-- A screenshot of the blocking page: `smartthings_pat_error.png` (and `/tmp/smartthings_pat_error.png`)
-- The full page HTML: `smartthings_pat_error.html` (and `/tmp/smartthings_pat_error.html`)
-You can inspect these files to immediately see the exact screen that was displayed.
+Other one-off commands (same as `main.py pat|food|kics`):
 
----
-
-## Home Assistant Configuration
-
-### ✨ Recommended (v1.1.0+: Zero YAML Needed!)
-Starting with integration version **v1.1.0**, you do **NOT** need any REST sensors in `configuration.yaml` or automations!
-
-1. In Home Assistant, go to **Settings → Devices & Services → Samsung FamilyHub**.
-2. Click **Configure**.
-3. Set your **Rotator URL** (e.g. `http://<YOUR_LINUX_SERVER_IP>:8765`, defaulting to `http://127.0.0.1:8765`).
-4. Click **Submit**.
-
-Home Assistant will automatically query the rotator for:
-- Active **SmartThings PAT** (for fridge cameras and door status)
-- Active **KICS Live Food Circles Token** & **Location ID** (for shelf crops & inventory)
-- Active **Samsung Food (Whisk) Token** (for stock photo fallbacks)
-
-#### 🚀 Intelligent Startup Priming & Zero Routine Polling
-* **Single Startup Sync**: On Home Assistant startup, the integration queries `GET /tokens` once to fetch all active tokens and their scheduled rotation timestamps (`next_rotation_at`).
-* **Zero Routine Polling**: Tokens are cached in-memory with precise TTL expiration. Routine 10-second camera refreshes and 10-15 minute food inventory syncs run 100% locally against Samsung APIs without querying the rotator microservice.
-* **Proactive & Reactive Renewal**: Home Assistant only queries the rotator when a token reaches its scheduled rotation time or if Samsung returns an authentication error (HTTP 401/403).
-
-> **Upgrading from v1.0.x?** You can safely remove the legacy REST sensors from `configuration.yaml`, remove the sync automations from `automations.yaml`, and delete the `input_text` helper entities. All token synchronization is now handled automatically via the native Options Flow.
-
----
-
-### 📜 Legacy Method (v1.0.x and earlier)
-*(Kept for users on older integration versions)*
-
-#### 1. Create Helper Entities
-In Home Assistant: **Settings → Devices & Services → Helpers → Create Helper → Text**:
-* **Helper 1 (PAT)**: `input_text.smartthings_pat`
-* **Helper 2 (Food Token)**: `input_text.samsung_food_token`
-
-#### 2. Add REST Sensors to `configuration.yaml`
-```yaml
-sensor:
-  - platform: rest
-    name: "SmartThings PAT"
-    resource: "http://<YOUR_LINUX_SERVER_IP>:8765/pat"
-    value_template: "{{ value_json.token }}"
-    scan_interval: 3600 # Polls every hour
-
-  - platform: rest
-    name: "Samsung Food Token"
-    resource: "http://<YOUR_LINUX_SERVER_IP>:8765/food_token"
-    value_template: "{{ value_json.token }}"
-    scan_interval: 86400 # Polls once daily
+```bash
+.venv/bin/python generate_food_token.py
+.venv/bin/python generate_kics_token.py --login          # first-time KICS bootstrap from the saved session
+.venv/bin/python generate_kics_token.py --refresh-now
+.venv/bin/python generate_kics_token.py --validate-only
 ```
 
-### 3. Add Sync Automations to `automations.yaml`
-```yaml
-- alias: "Sync SmartThings PAT from Rotator"
-  description: "Copies fetched PAT from REST sensor to input_text.smartthings_pat"
-  trigger:
-    - platform: state
-      entity_id: sensor.smartthings_pat
-    - platform: homeassistant
-      event: start
-  condition:
-    - condition: template
-      value_template: >-
-        {{ states('sensor.smartthings_pat') not in ['unknown', 'unavailable', 'None', ''] }}
-  action:
-    - service: input_text.set_value
-      target:
-        entity_id: input_text.smartthings_pat
-      data:
-        value: "{{ states('sensor.smartthings_pat') }}"
+### Debugging a failed login
 
-- alias: "Sync Samsung Food Token from Rotator"
-  description: "Copies fetched Food Token from REST sensor to input_text.samsung_food_token"
-  trigger:
-    - platform: state
-      entity_id: sensor.samsung_food_token
-    - platform: homeassistant
-      event: start
-  condition:
-    - condition: template
-      value_template: >-
-        {{ states('sensor.samsung_food_token') not in ['unknown', 'unavailable', 'None', ''] }}
-  action:
-    - service: input_text.set_value
-      target:
-        entity_id: input_text.samsung_food_token
-      data:
-        value: "{{ states('sensor.samsung_food_token') }}"
-```
+The SmartThings tokens page can display a live PAT, so failure screenshots/HTML are **off by default**. Start the service (or script) with `PAT_ROTATOR_KEEP_DEBUG=1` to write `smartthings_pat_error.png/.html` (owner-only) next to the scripts, and delete them afterwards.
 
-### 4. Restart Home Assistant
-Restart Home Assistant to load the REST sensors and automations. The integration's dynamic listeners will automatically keep cameras, door sensors, and fridge food inventory updated continuously!
+## Files
 
----
+All state lives in this folder, with owner-only permissions: `config.json`, `smartthings_pat.txt`, `samsung_food_token.txt`, `kics_food_token.txt`, `kics_refresh_token.txt`, `smartthings_session.json` (your Samsung login cookies — treat like a password), `rotator.log`.
 
-## Optional: Systemd Service Setup (For Auto-Start on Boot)
+## Run at boot (systemd)
 
-Create `/etc/systemd/system/smartthings-rotator.service`:
+`/etc/systemd/system/token-rotator.service`:
+
 ```ini
 [Unit]
-Description=SmartThings & Samsung Food Token Rotator Service
-After=network.target
+Description=Samsung FamilyHub token rotator
+After=network-online.target
 
 [Service]
-Type=simple
 User=<YOUR_USER>
-WorkingDirectory=/home/<YOUR_USER>/smartthings_pat_rotator
-ExecStart=/home/<YOUR_USER>/smartthings_pat_rotator/.venv/bin/python main.py
+WorkingDirectory=/home/<YOUR_USER>/<path-to>/tools/pat_rotator
+ExecStart=/home/<YOUR_USER>/<path-to>/tools/pat_rotator/.venv/bin/python main.py
 Restart=always
 RestartSec=10
 
@@ -226,8 +117,11 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-Enable and start:
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now smartthings-rotator
+sudo systemctl daemon-reload && sudo systemctl enable --now token-rotator
 ```
+
+## Notes
+
+* Each PAT is created with a timestamped name; the service does not delete old ones, so you may want to prune them occasionally at account.smartthings.com/tokens.
+* Automating a Samsung login is inherently fragile: Samsung can change its pages or add challenges at any time. The KICS token avoids this by using refresh tokens, and is the model to prefer wherever Samsung offers it.

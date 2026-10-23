@@ -1,26 +1,28 @@
 #!/usr/bin/env bash
-set -e
+# Create a virtualenv, install dependencies and Chromium, and seed config.json.
+set -euo pipefail
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-cd "$DIR"
+cd "$(dirname "${BASH_SOURCE[0]}")"
 
-echo "Setting up SmartThings PAT Rotator in $DIR..."
-
-if [ ! -d ".venv" ]; then
-    echo "Creating Python virtual environment..."
-    python3 -m venv .venv || (curl -sS https://bootstrap.pypa.io/get-pip.py | python3 && python3 -m venv .venv)
+if [ ! -d .venv ]; then
+    echo "Creating virtual environment..."
+    python3 -m venv .venv || {
+        echo "python3 -m venv failed. On Debian/Ubuntu: sudo apt install python3-venv" >&2
+        exit 1
+    }
 fi
 
 echo "Installing dependencies..."
+.venv/bin/pip install --quiet --upgrade pip
 .venv/bin/pip install -r requirements.txt
 
-echo "Installing Playwright Chromium browser..."
+echo "Installing Playwright Chromium..."
 .venv/bin/playwright install chromium
 
-if [ ! -f "config.json" ]; then
-    echo "Creating config.json template..."
+if [ ! -f config.json ]; then
     cp config.example.json config.json
-    echo "--> Please edit config.json with your Samsung Account email and password."
+    chmod 600 config.json
+    echo "Created config.json. Edit it with your Samsung account details."
 fi
 
-echo "Setup complete! Run with: .venv/bin/python main.py"
+echo "Done. Start the service with: .venv/bin/python main.py"
