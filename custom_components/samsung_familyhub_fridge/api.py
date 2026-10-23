@@ -10,7 +10,7 @@ from typing import Any
 
 import aiohttp
 
-from .auth import refresh_samsung_iot_token
+from .auth import AuthError, refresh_samsung_iot_token
 from .const import CID, DEFAULT_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
@@ -120,7 +120,7 @@ class FamilyHub:
             credentials = await refresh_samsung_iot_token(
                 self._session, self._samsung_iot_refresh_token, self._samsung_iot_auth_server
             )
-        except Exception as err:  # noqa: BLE001 - AuthError, ClientError, KeyError, ValueError, timeouts
+        except (AuthError, aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
             raise AuthenticationError(f"Samsung IoT token refresh failed: {err}") from err
         self.set_samsung_iot_token(
             credentials.access_token,

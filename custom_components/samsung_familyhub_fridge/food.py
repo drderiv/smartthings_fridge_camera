@@ -280,7 +280,7 @@ class SamsungFoodClient:
             async with self._session.get(
                 WHISK_FOODLIST_API, headers=self._whisk_headers(token), timeout=WHISK_TIMEOUT
             ) as response:
-                if response.ok:
+                if response.status < 400:
                     payload = await response.json(content_type=None)
                     for item in payload.get("items", []):
                         content = item.get("content", {})
@@ -303,7 +303,7 @@ class SamsungFoodClient:
             async with semaphore:
                 try:
                     async with self._session.get(url, timeout=IMAGE_TIMEOUT) as response:
-                        content = await response.read() if response.ok else b""
+                        content = await response.read() if response.status < 400 else b""
                 except (aiohttp.ClientError, TimeoutError) as err:
                     _LOGGER.debug("Could not cache food circle image: %s", err)
                     return name, None
@@ -388,7 +388,7 @@ class SamsungFoodClient:
             try:
                 async with self._session.get(KICS_FOODLIST_ENDPOINT, headers=headers, timeout=KICS_TIMEOUT) as response:
                     status = response.status
-                    payload = await response.json(content_type=None) if response.ok else None
+                    payload = await response.json(content_type=None) if response.status < 400 else None
             except (aiohttp.ClientError, TimeoutError, ValueError) as err:
                 error = str(err) or type(err).__name__
                 if attempt < KICS_ATTEMPTS:
@@ -431,7 +431,7 @@ class SamsungFoodClient:
                 async with self._session.get(
                     WHISK_FOODLIST_API, headers=headers, params=params, timeout=KICS_TIMEOUT
                 ) as response:
-                    if not response.ok:
+                    if response.status >= 400:
                         _LOGGER.warning("Samsung Food API page %d returned HTTP %s", page, response.status)
                         error = f"HTTP {response.status}"
                         break

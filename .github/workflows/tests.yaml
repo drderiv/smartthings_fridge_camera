@@ -1,0 +1,28 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    name: Unit tests (stubbed Home Assistant)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements_test.txt
+      - run: python -m pytest -q
+
+  home-assistant:
+    name: Tests on real Home Assistant
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t fridge-ha-tests -f tests_ha/Dockerfile .
+      - run: >
+          docker run --rm -v "$PWD":/repo -w /repo fridge-ha-tests
+          python -m pytest -c tests_ha/pytest.ini --rootdir=/repo tests_ha -q

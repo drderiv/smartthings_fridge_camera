@@ -1,0 +1,9 @@
+# Fast tests (tests/): Home Assistant is stubbed, so these run on any Python 3.12+.
+#   python -m pip install -r requirements_test.txt && python -m pytest
+# Real Home Assistant tests (tests_ha/) run in Docker; see tests_ha/README.md.
+pytest>=8
+pytest-asyncio>=0.23
+aiohttp>=3.9
+voluptuous>=0.14
+requests>=2.31          # tools/pat_rotator
+requests-mock>=1.11     # tools/pat_rotator tests

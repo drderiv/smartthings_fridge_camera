@@ -36,7 +36,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
 from .api import AuthenticationError, FamilyHub, RateLimitError
-from .auth import SmartThingsOAuth, refresh_samsung_iot_token
+from .auth import AuthError, SmartThingsOAuth, refresh_samsung_iot_token
 from .const import (
     AUTH_MODE_PAT,
     CONF_AUTH_MODE,
@@ -277,7 +277,7 @@ async def _build_standalone_hub(
         iot_server = entry.data.get(CONF_SAMSUNG_IOT_AUTH_SERVER, DEFAULT_IOT_AUTH_SERVER)
         try:
             iot = await refresh_samsung_iot_token(session, iot_refresh, iot_server)
-        except Exception as err:  # noqa: BLE001 - auth.py raises AuthError/HTTPError/KeyError; images only
+        except (AuthError, aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:  # images only
             _LOGGER.warning(
                 "Could not refresh the Samsung IoT token; image downloads will fail until resolved: %s", err
             )

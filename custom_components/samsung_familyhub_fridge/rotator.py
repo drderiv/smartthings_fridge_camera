@@ -60,7 +60,7 @@ class RotatorClient:
                 headers=self._headers,
                 timeout=aiohttp.ClientTimeout(total=ROTATOR_TIMEOUT),
             ) as response:
-                if not response.ok:
+                if response.status >= 400:
                     _LOGGER.debug("Rotator %s returned HTTP %s", path, response.status)
                     return None
                 payload = await response.json(content_type=None)
