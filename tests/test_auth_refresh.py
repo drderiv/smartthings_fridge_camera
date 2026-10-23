@@ -1,7 +1,9 @@
 """Unit tests for auth refresh, error detection, and defensive error handling."""
 
 import pytest
-import requests_mock as rm
+import re
+
+from tests.fake_aiohttp import aioresponses
 
 # conftest installs HA stubs before any component imports
 from tests.conftest import _HomeAssistant, _ConfigEntryAuthFailed
@@ -26,8 +28,18 @@ def hass():
 
 
 @pytest.fixture
-def hub(hass):
-    return FamilyHub(token="valid-token", device_id="device-123")
+def hub(session):
+    return FamilyHub(session, token="valid-token", device_id="device-123")
+
+
+def last_headers(mocked_requests):
+    """Headers of the most recent request seen by aioresponses."""
+    calls = [call for group in mocked_requests.requests.values() for call in group]
+    return calls[-1].kwargs["headers"]
+
+
+def call_count(mocked_requests):
+    return sum(len(group) for group in mocked_requests.requests.values())
 
 
 DEVICE_STATUS_URL = "https://client.smartthings.com/devices/status"
@@ -45,63 +57,54 @@ FILE_LINK_URL_RE = r"https://client\.smartthings\.com/udo/file_links/.+"
 class TestCheckResponse:
     """Verify _check_response raises AuthenticationError on 401/403."""
 
-    def test_401_raises_auth_error(self, hub):
-        with rm.Mocker() as m:
-            m.get(DEVICE_STATUS_URL, status_code=401, json={"error": "Unauthorized"})
+    async def test_401_raises_auth_error(self, hub):
+        with aioresponses() as m:
+            m.get(DEVICE_STATUS_URL, status=401, payload={"error": "Unauthorized"})
             with pytest.raises(AuthenticationError, match="401"):
-                hub.get_all_device_status()
+                await hub.get_all_device_status()
 
-    def test_403_raises_auth_error(self, hub):
-        with rm.Mocker() as m:
-            m.get(DEVICE_STATUS_URL, status_code=403, json={"error": "Forbidden"})
+    async def test_403_raises_auth_error(self, hub):
+        with aioresponses() as m:
+            m.get(DEVICE_STATUS_URL, status=403, payload={"error": "Forbidden"})
             with pytest.raises(AuthenticationError, match="403"):
-                hub.get_all_device_status()
+                await hub.get_all_device_status()
 
-    def test_200_does_not_raise(self, hub):
-        with rm.Mocker() as m:
-            m.get(DEVICE_STATUS_URL, json={"items": []})
-            result = hub.get_all_device_status()
+    async def test_200_does_not_raise(self, hub):
+        with aioresponses() as m:
+            m.get(DEVICE_STATUS_URL, payload={"items": []})
+            result = await hub.get_all_device_status()
             assert result == {"items": []}
 
     def test_500_does_not_raise_auth_error(self, hub):
         """Non-auth HTTP errors should not raise AuthenticationError."""
-        with rm.Mocker() as m:
-            m.get(DEVICE_STATUS_URL, status_code=500, text="Internal Server Error")
+        with aioresponses() as m:
+            m.get(DEVICE_STATUS_URL, status=500, body="Internal Server Error")
             # Should not raise AuthenticationError (it logs a warning but returns)
             # However the .json() call will likely fail, so let's test _check_response directly
-            resp = requests_response(500)
-            hub._check_response(resp)  # no exception
+            hub._check_response(500, b"Internal Server Error")  # no exception
 
-    def test_current_device_status_401(self, hub):
-        with rm.Mocker() as m:
-            m.get(CURRENT_STATUS_URL, status_code=401)
+    async def test_current_device_status_401(self, hub):
+        with aioresponses() as m:
+            m.get(CURRENT_STATUS_URL, status=401)
             with pytest.raises(AuthenticationError):
-                hub.get_current_device_status()
+                await hub.get_current_device_status()
 
-    def test_update_camera_401(self, hub):
-        with rm.Mocker() as m:
-            m.post(COMMANDS_URL, status_code=401)
+    async def test_update_camera_401(self, hub):
+        with aioresponses() as m:
+            m.post(COMMANDS_URL, status=401)
             with pytest.raises(AuthenticationError):
-                hub.update_camera()
+                await hub.update_camera()
 
-    def test_download_images_403(self, hub):
+    async def test_download_images_403(self, hub):
         hub._current_device_status = {
             "samsungce.viewInside": {
                 "contents": {"value": [{"fileId": "file-1"}]}
             }
         }
-        with rm.Mocker() as m:
-            m.get(rm.ANY, status_code=403)
+        with aioresponses() as m:
+            m.get(re.compile(r".*"), status=403)
             with pytest.raises(AuthenticationError):
-                hub.download_images()
-
-
-def requests_response(status_code, json_data=None):
-    """Create a minimal requests.Response for direct _check_response testing."""
-    import requests
-    resp = requests.models.Response()
-    resp.status_code = status_code
-    return resp
+                await hub.download_images()
 
 
 # ---------------------------------------------------------------------------
@@ -218,12 +221,12 @@ class TestTokenUpdate:
         assert hub.token == "new-token-abc"
         assert hub._headers["Authorization"] == "Bearer new-token-abc"
 
-    def test_update_token_used_in_api_calls(self, hub):
+    async def test_update_token_used_in_api_calls(self, hub):
         hub.update_token("refreshed-token")
-        with rm.Mocker() as m:
-            m.get(DEVICE_STATUS_URL, json={"items": []})
-            hub.get_all_device_status()
-            assert m.last_request.headers["Authorization"] == "Bearer refreshed-token"
+        with aioresponses() as m:
+            m.get(DEVICE_STATUS_URL, payload={"items": []})
+            await hub.get_all_device_status()
+            assert last_headers(m)["Authorization"] == "Bearer refreshed-token"
 
 
 # ---------------------------------------------------------------------------
@@ -233,28 +236,28 @@ class TestTokenUpdate:
 class TestApiErrorResponses:
     """Verify API error responses are logged but don't crash."""
 
-    def test_get_all_device_status_with_error_body(self, hub):
+    async def test_get_all_device_status_with_error_body(self, hub):
         error_resp = {
             "error": {
                 "code": "UnexpectedError",
                 "message": "A non-recoverable error condition occurred.",
             }
         }
-        with rm.Mocker() as m:
-            m.get(DEVICE_STATUS_URL, json=error_resp)
-            result = hub.get_all_device_status()
+        with aioresponses() as m:
+            m.get(DEVICE_STATUS_URL, payload=error_resp)
+            result = await hub.get_all_device_status()
             assert "error" in result
 
-    def test_get_current_device_status_with_error_body(self, hub):
+    async def test_get_current_device_status_with_error_body(self, hub):
         error_resp = {
             "error": {
                 "code": "UnexpectedError",
                 "message": "Something went wrong.",
             }
         }
-        with rm.Mocker() as m:
-            m.get(CURRENT_STATUS_URL, json=error_resp)
-            result = hub.get_current_device_status()
+        with aioresponses() as m:
+            m.get(CURRENT_STATUS_URL, payload=error_resp)
+            result = await hub.get_current_device_status()
             assert "error" in result
 
 
@@ -268,8 +271,8 @@ class TestCoordinatorAuthPropagation:
     @pytest.mark.asyncio
     async def test_coordinator_raises_config_entry_auth_failed(self, hass, hub):
         coordinator = make_coordinator(hass, hub)
-        with rm.Mocker() as m:
-            m.get(CURRENT_STATUS_URL, status_code=401)
+        with aioresponses() as m:
+            m.get(CURRENT_STATUS_URL, status=401)
             # Pre-set state so coordinator takes the "else" path (get_current_device_status)
             hub._device_id = "device-123"
             hub.should_update = False
@@ -288,9 +291,9 @@ class TestCoordinatorAuthPropagation:
         coordinator = make_coordinator(hass, hub)
         hub._device_id = "device-123"
         hub.should_update = True
-        with rm.Mocker() as m:
-            m.get(CURRENT_STATUS_URL, json={"contactSensor": {"contact": {"value": "open", "timestamp": "t"}}})
-            m.post(COMMANDS_URL, status_code=403)
+        with aioresponses() as m:
+            m.get(CURRENT_STATUS_URL, payload={"contactSensor": {"contact": {"value": "open", "timestamp": "t"}}})
+            m.post(COMMANDS_URL, status=403)
             with pytest.raises(_ConfigEntryAuthFailed):
                 await coordinator._async_update_data()
 
@@ -314,8 +317,8 @@ class TestCoordinatorAuthPropagation:
                 "contents": {"value": [{"fileId": "f1"}]}
             },
         }
-        with rm.Mocker() as m:
-            m.get(CURRENT_STATUS_URL, json=normal_status)
+        with aioresponses() as m:
+            m.get(CURRENT_STATUS_URL, payload=normal_status)
             # Should complete without raising
             await coordinator._async_update_data()
 
@@ -327,32 +330,32 @@ class TestCoordinatorAuthPropagation:
 class TestFullAuthRefreshScenario:
     """End-to-end: token expires -> detected -> token updated -> works again."""
 
-    def test_expire_detect_refresh_recover(self, hub):
-        with rm.Mocker() as m:
+    async def test_expire_detect_refresh_recover(self, hub):
+        with aioresponses() as m:
             # 1. Initial call works
-            m.get(DEVICE_STATUS_URL, json={"items": []})
-            result = hub.get_all_device_status()
+            m.get(DEVICE_STATUS_URL, payload={"items": []})
+            result = await hub.get_all_device_status()
             assert result == {"items": []}
 
-        with rm.Mocker() as m:
+        with aioresponses() as m:
             # 2. Token expires -> 401
-            m.get(DEVICE_STATUS_URL, status_code=401)
+            m.get(DEVICE_STATUS_URL, status=401)
             with pytest.raises(AuthenticationError):
-                hub.get_all_device_status()
+                await hub.get_all_device_status()
 
         # 3. User re-authenticates, token is updated
         hub.update_token("brand-new-token")
 
-        with rm.Mocker() as m:
+        with aioresponses() as m:
             # 4. Subsequent call with new token works
-            m.get(DEVICE_STATUS_URL, json={"items": [{"deviceId": "fridge-1"}]})
-            result = hub.get_all_device_status()
+            m.get(DEVICE_STATUS_URL, payload={"items": [{"deviceId": "fridge-1"}]})
+            result = await hub.get_all_device_status()
             assert result["items"][0]["deviceId"] == "fridge-1"
-            assert m.last_request.headers["Authorization"] == "Bearer brand-new-token"
+            assert last_headers(m)["Authorization"] == "Bearer brand-new-token"
 
     @pytest.mark.asyncio
-    async def test_coordinator_recovers_after_token_update(self, hass):
-        hub = FamilyHub(token="old-token", device_id="device-123")
+    async def test_coordinator_recovers_after_token_update(self, hass, session):
+        hub = FamilyHub(session, token="old-token", device_id="device-123")
         coordinator = make_coordinator(hass, hub)
         hub.should_update = False
         hub._current_device_status = {
@@ -363,8 +366,8 @@ class TestFullAuthRefreshScenario:
         coordinator.last_file_ids = ["f1"]
 
         # Step 1: Auth fails
-        with rm.Mocker() as m:
-            m.get(CURRENT_STATUS_URL, status_code=401)
+        with aioresponses() as m:
+            m.get(CURRENT_STATUS_URL, status=401)
             with pytest.raises(_ConfigEntryAuthFailed):
                 await coordinator._async_update_data()
 
@@ -380,8 +383,8 @@ class TestFullAuthRefreshScenario:
                 "contents": {"value": [{"fileId": "f1"}]}
             },
         }
-        with rm.Mocker() as m:
-            m.get(CURRENT_STATUS_URL, json=normal_status)
+        with aioresponses() as m:
+            m.get(CURRENT_STATUS_URL, payload=normal_status)
             await coordinator._async_update_data()  # no exception
 
 
@@ -419,10 +422,10 @@ class TestStatusErrorHandlingAndCoordinatorResilience:
         hub.set_device_status({"error": {"code": "UnexpectedError"}})
         assert hub._device_status == valid_devices
 
-    def test_download_images_returns_false_on_empty_file_ids(self, hub):
+    async def test_download_images_returns_false_on_empty_file_ids(self, hub):
         hub._current_device_status = {"other": "data"}
         assert hub.get_file_ids() == []
-        assert hub.download_images() is False
+        assert await hub.download_images() is False
 
     @pytest.mark.asyncio
     async def test_coordinator_continues_polling_on_repeated_download_failures(self, hass, hub):
@@ -436,11 +439,11 @@ class TestStatusErrorHandlingAndCoordinatorResilience:
         }
         coordinator.last_file_ids = ["old_id"]
 
-        with rm.Mocker() as m:
+        with aioresponses() as m:
             # Mock image download failure (500 error)
-            m.get(re.compile(r"^https://client\.smartthings\.com/udo/file_links/.*"), status_code=500)
+            m.get(re.compile(r"^https://client\.smartthings\.com/udo/file_links/.*"), status=500)
             # Mock status polling with door open so should_update is not triggered
-            m.get(CURRENT_STATUS_URL, json={
+            m.get(CURRENT_STATUS_URL, payload={
                 "contactSensor": {"contact": {"value": "open", "timestamp": "2025-01-01"}},
                 "samsungce.viewInside": {"contents": {"value": [{"fileId": "changed_id"}]}}
             })
@@ -453,5 +456,5 @@ class TestStatusErrorHandlingAndCoordinatorResilience:
             # Status is polled every cycle, so polling never stalls on a bad file ID
             await coordinator._async_update_data()
             assert coordinator._download_failures == 4
-            assert m.call_count >= 5
+            assert call_count(m) >= 5
 

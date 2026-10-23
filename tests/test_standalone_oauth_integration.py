@@ -2,7 +2,7 @@
 
 These tests drive the full 3-step flow through the real config_flow module
 without mocking the flow's internal logic — only external network calls are
-stubbed (requests_mock / MagicMock).
+stubbed (fake aiohttp responses / MagicMock).
 
 Run with:
     pytest tests/test_standalone_oauth_integration.py -v
@@ -12,7 +12,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-import requests_mock as rm
 
 from tests.conftest import _HomeAssistant
 
@@ -50,7 +49,7 @@ def _make_flow(hass) -> ConfigFlow:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_full_flow_raw_code_skip_samsung(requests_mock):
+async def test_full_flow_raw_code_skip_samsung(mocked):
     """End-to-end: enter credentials, exchange raw code, skip Samsung login."""
     hass = _HomeAssistant()
     hass.config_entries = MagicMock()
@@ -72,9 +71,9 @@ async def test_full_flow_raw_code_skip_samsung(requests_mock):
     assert result["step_id"] == "standalone_oauth_link", f"Expected link step, got: {result}"
 
     # Stub the token exchange endpoint
-    requests_mock.post(
+    mocked.post(
         TOKEN_URL,
-        json={
+        payload={
             "access_token": "integ-access-token",
             "refresh_token": "integ-refresh-token",
             "token_type": "bearer",
@@ -107,7 +106,7 @@ async def test_full_flow_raw_code_skip_samsung(requests_mock):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_full_flow_redirect_url_with_samsung(requests_mock):
+async def test_full_flow_redirect_url_with_samsung(mocked):
     """End-to-end: enter credentials, exchange via redirect URL, Samsung login."""
     hass = _HomeAssistant()
     hass.config_entries = MagicMock()
@@ -124,9 +123,9 @@ async def test_full_flow_redirect_url_with_samsung(requests_mock):
     )
 
     # Stub token exchange
-    requests_mock.post(
+    mocked.post(
         TOKEN_URL,
-        json={
+        payload={
             "access_token": "integ-access-token",
             "refresh_token": "integ-refresh-token",
             "token_type": "bearer",
@@ -142,19 +141,19 @@ async def test_full_flow_redirect_url_with_samsung(requests_mock):
     assert result["step_id"] == "standalone_oauth_samsung"
 
     # Stub Samsung Account login → IoT token flow
-    requests_mock.post(
+    mocked.post(
         SAMSUNG_AUTH_URL,
-        json={"userauth_token": "samsung-userauth-tok"},
+        payload={"userauth_token": "samsung-userauth-tok"},
     )
-    requests_mock.get(
+    mocked.get(
         SAMSUNG_IOT_AUTHORIZE_URL,
-        json={"code": "iot-auth-code"},
+        payload={"code": "iot-auth-code"},
         headers={"Content-Type": "application/json"},
-        status_code=200,
+        status=200,
     )
-    requests_mock.post(
+    mocked.post(
         SAMSUNG_IOT_TOKEN_URL,
-        json={
+        payload={
             "access_token": "iot-access-token",
             "refresh_token": "iot-refresh-token",
         },
@@ -181,7 +180,7 @@ async def test_full_flow_redirect_url_with_samsung(requests_mock):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_full_flow_with_signin_client_secret(requests_mock):
+async def test_full_flow_with_signin_client_secret(mocked):
     """End-to-end: samsung_signin_client_secret is stored in entry data and
     passed through to SamsungAccountAuth (verified via HTTP stub matching)."""
     hass = _HomeAssistant()
@@ -199,9 +198,9 @@ async def test_full_flow_with_signin_client_secret(requests_mock):
     )
 
     # Stub token exchange
-    requests_mock.post(
+    mocked.post(
         TOKEN_URL,
-        json={
+        payload={
             "access_token": "integ-access-token",
             "refresh_token": "integ-refresh-token",
             "token_type": "bearer",
@@ -216,19 +215,19 @@ async def test_full_flow_with_signin_client_secret(requests_mock):
     assert result["step_id"] == "standalone_oauth_samsung"
 
     # Stub Samsung Account auth endpoints (real HTTP calls from SamsungAccountAuth)
-    requests_mock.post(
+    mocked.post(
         SAMSUNG_AUTH_URL,
-        json={"userauth_token": "samsung-userauth-tok"},
+        payload={"userauth_token": "samsung-userauth-tok"},
     )
-    requests_mock.get(
+    mocked.get(
         SAMSUNG_IOT_AUTHORIZE_URL,
-        json={"code": "iot-auth-code"},
+        payload={"code": "iot-auth-code"},
         headers={"Content-Type": "application/json"},
-        status_code=200,
+        status=200,
     )
-    requests_mock.post(
+    mocked.post(
         SAMSUNG_IOT_TOKEN_URL,
-        json={
+        payload={
             "access_token": "iot-access-token",
             "refresh_token": "iot-refresh-secret",
         },

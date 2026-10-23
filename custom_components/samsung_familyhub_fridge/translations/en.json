@@ -144,5 +144,26 @@
         "oauth_mode_removed": {
             "message": "Borrowing the SmartThings integration's OAuth credentials is no longer supported. Reconfigure using Standalone OAuth or a Personal Access Token."
         }
+    },
+    "entity": {
+        "camera": {
+            "top": {
+                "name": "Top"
+            },
+            "middle": {
+                "name": "Middle"
+            },
+            "bottom": {
+                "name": "Bottom"
+            }
+        },
+        "sensor": {
+            "last_updated_at": {
+                "name": "Last updated at"
+            },
+            "food_inventory": {
+                "name": "Food inventory"
+            }
+        }
     }
 }

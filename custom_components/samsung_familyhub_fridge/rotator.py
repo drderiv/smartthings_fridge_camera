@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-import requests
+import aiohttp
 
 from .const import (
     CONF_ROTATOR_API_KEY,
@@ -39,42 +39,45 @@ def resolve_rotator_url(entry: Any | None) -> str:
 
 
 class RotatorClient:
-    """Blocking HTTP client; call its methods from an executor thread."""
+    """Reads tokens from the rotator's HTTP API."""
 
-    def __init__(self, url: str, api_key: str | None = None) -> None:
+    def __init__(self, session: aiohttp.ClientSession, url: str, api_key: str | None = None) -> None:
+        self._session = session
         self.url = url.rstrip("/")
         self._headers = (
             {"Authorization": f"Bearer {api_key.strip()}"} if api_key and api_key.strip() else {}
         )
 
     @classmethod
-    def from_entry(cls, entry: Any) -> RotatorClient:
-        return cls(resolve_rotator_url(entry), entry_value(entry, CONF_ROTATOR_API_KEY))
+    def from_entry(cls, session: aiohttp.ClientSession, entry: Any) -> RotatorClient:
+        return cls(session, resolve_rotator_url(entry), entry_value(entry, CONF_ROTATOR_API_KEY))
 
-    def get_json(self, path: str) -> dict[str, Any] | None:
+    async def get_json(self, path: str) -> dict[str, Any] | None:
         """GET ``path``; the JSON object on success, else None (logged at debug)."""
         try:
-            response = requests.get(
-                f"{self.url}{path}", headers=self._headers, timeout=ROTATOR_TIMEOUT
-            )
-            if not response.ok:
-                _LOGGER.debug("Rotator %s returned HTTP %s", path, response.status_code)
-                return None
-            payload = response.json()
-        except (requests.RequestException, ValueError) as err:
+            async with self._session.get(
+                f"{self.url}{path}",
+                headers=self._headers,
+                timeout=aiohttp.ClientTimeout(total=ROTATOR_TIMEOUT),
+            ) as response:
+                if not response.ok:
+                    _LOGGER.debug("Rotator %s returned HTTP %s", path, response.status)
+                    return None
+                payload = await response.json(content_type=None)
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             _LOGGER.debug("Rotator %s unavailable: %s", path, err)
             return None
         return payload if isinstance(payload, dict) else None
 
-    def fetch_token(self, path: str) -> RotatorToken | None:
+    async def fetch_token(self, path: str) -> RotatorToken | None:
         """Fetch a single-token endpoint such as /pat, /kics_token or /food_token."""
-        payload = self.get_json(path)
+        payload = await self.get_json(path)
         token = str((payload or {}).get("token") or "").strip()
         if not token:
             return None
         next_rotation = payload.get("next_rotation_at")
         return RotatorToken(token, float(next_rotation) if next_rotation else None)
 
-    def tokens(self) -> dict[str, Any]:
+    async def tokens(self) -> dict[str, Any]:
         """The combined /tokens document (empty if unreachable)."""
-        return self.get_json("/tokens") or {}
+        return await self.get_json("/tokens") or {}

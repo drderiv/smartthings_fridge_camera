@@ -1,7 +1,11 @@
 """Unit tests for the SmartThingsOAuth and SamsungAccountAuth modules."""
 
+import base64
+
+import aiohttp
 import pytest
-import requests_mock as rm
+
+from tests.fake_aiohttp import aioresponses
 
 from custom_components.samsung_familyhub_fridge.auth import (
     SmartThingsOAuth,
@@ -25,6 +29,11 @@ def oauth():
         redirect_uri="https://httpbin.org/get",
         scopes="r:devices:* w:devices:*",
     )
+
+
+def last_call(intercepted, index=-1):
+    """Keyword arguments of the n-th request seen by the fake aiohttp."""
+    return intercepted.calls[index].kwargs
 
 
 class TestPKCE:
@@ -73,7 +82,7 @@ class TestExtractCode:
 
 
 class TestTokenExchange:
-    def test_exchange_code_success(self, oauth):
+    async def test_exchange_code_success(self, oauth, session):
         oauth.get_authorization_url()  # sets _code_verifier
 
         token_response = {
@@ -85,9 +94,9 @@ class TestTokenExchange:
             "installed_app_id": "app-123",
         }
 
-        with rm.Mocker() as m:
-            m.post(TOKEN_URL, json=token_response)
-            creds = oauth.exchange_code("auth-code-xyz")
+        with aioresponses() as m:
+            m.post(TOKEN_URL, payload=token_response)
+            creds = await oauth.exchange_code(session, "auth-code-xyz")
 
         assert creds.access_token == "new-access-token"
         assert creds.refresh_token == "new-refresh-token"
@@ -95,44 +104,44 @@ class TestTokenExchange:
         assert creds.scope == "r:devices:* w:devices:*"
         assert creds.installed_app_id == "app-123"
 
-    def test_exchange_code_sends_correct_params(self, oauth):
+    async def test_exchange_code_sends_correct_params(self, oauth, session):
         oauth.get_authorization_url()
 
-        with rm.Mocker() as m:
-            m.post(TOKEN_URL, json={
+        with aioresponses() as m:
+            m.post(TOKEN_URL, payload={
                 "access_token": "a", "refresh_token": "r",
             })
-            oauth.exchange_code("the-code")
+            await oauth.exchange_code(session, "the-code")
 
-        body = m.last_request.body
-        assert "grant_type=authorization_code" in body
-        assert "client_id=test-client-id" in body
-        assert "code=the-code" in body
-        assert "code_verifier=" in body
+        body = last_call(m)["data"]
+        assert body["grant_type"] == "authorization_code"
+        assert body["client_id"] == "test-client-id"
+        assert body["code"] == "the-code"
+        assert body["code_verifier"]
 
-    def test_exchange_code_uses_basic_auth(self, oauth):
+    async def test_exchange_code_uses_basic_auth(self, oauth, session):
         oauth.get_authorization_url()
 
-        with rm.Mocker() as m:
-            m.post(TOKEN_URL, json={
+        with aioresponses() as m:
+            m.post(TOKEN_URL, payload={
                 "access_token": "a", "refresh_token": "r",
             })
-            oauth.exchange_code("c")
+            await oauth.exchange_code(session, "c")
 
-        auth_header = m.last_request.headers.get("Authorization", "")
-        assert auth_header.startswith("Basic ")
+        header = last_call(m)["headers"]["Authorization"]
+        assert header == "Basic " + base64.b64encode(b"test-client-id:test-client-secret").decode()
 
-    def test_exchange_code_raises_on_error(self, oauth):
+    async def test_exchange_code_raises_on_error(self, oauth, session):
         oauth.get_authorization_url()
 
-        with rm.Mocker() as m:
-            m.post(TOKEN_URL, status_code=400, json={"error": "invalid_grant"})
-            with pytest.raises(Exception):
-                oauth.exchange_code("bad-code")
+        with aioresponses() as m:
+            m.post(TOKEN_URL, status=400, payload={"error": "invalid_grant"})
+            with pytest.raises(aiohttp.ClientResponseError):
+                await oauth.exchange_code(session, "bad-code")
 
 
 class TestRefresh:
-    def test_refresh_success(self, oauth):
+    async def test_refresh_success(self, oauth, session):
         token_response = {
             "access_token": "refreshed-access",
             "refresh_token": "refreshed-refresh",
@@ -140,41 +149,42 @@ class TestRefresh:
             "expires_in": 86399,
             "scope": "r:devices:*",
         }
-        with rm.Mocker() as m:
-            m.post(TOKEN_URL, json=token_response)
-            creds = oauth.refresh("old-refresh-token")
+        with aioresponses() as m:
+            m.post(TOKEN_URL, payload=token_response)
+            creds = await oauth.refresh(session, "old-refresh-token")
 
         assert creds.access_token == "refreshed-access"
         assert creds.refresh_token == "refreshed-refresh"
         assert creds.expires_in == 86399
 
-    def test_refresh_sends_correct_params(self, oauth):
-        with rm.Mocker() as m:
-            m.post(TOKEN_URL, json={
+    async def test_refresh_sends_correct_params(self, oauth, session):
+        with aioresponses() as m:
+            m.post(TOKEN_URL, payload={
                 "access_token": "a", "refresh_token": "r",
             })
-            oauth.refresh("my-refresh-token")
+            await oauth.refresh(session, "my-refresh-token")
 
-        body = m.last_request.body
-        assert "grant_type=refresh_token" in body
-        assert "client_id=test-client-id" in body
-        assert "refresh_token=my-refresh-token" in body
+        body = last_call(m)["data"]
+        assert body["grant_type"] == "refresh_token"
+        assert body["client_id"] == "test-client-id"
+        assert body["refresh_token"] == "my-refresh-token"
 
-    def test_refresh_uses_basic_auth(self, oauth):
-        with rm.Mocker() as m:
-            m.post(TOKEN_URL, json={
+    async def test_refresh_uses_basic_auth(self, oauth, session):
+        with aioresponses() as m:
+            m.post(TOKEN_URL, payload={
                 "access_token": "a", "refresh_token": "r",
             })
-            oauth.refresh("tok")
+            await oauth.refresh(session, "tok")
 
-        auth_header = m.last_request.headers.get("Authorization", "")
-        assert auth_header.startswith("Basic ")
+        header = last_call(m)["headers"]["Authorization"]
+        assert header == "Basic " + base64.b64encode(b"test-client-id:test-client-secret").decode()
 
-    def test_refresh_raises_on_401(self, oauth):
-        with rm.Mocker() as m:
-            m.post(TOKEN_URL, status_code=401)
-            with pytest.raises(Exception):
-                oauth.refresh("expired-refresh-token")
+    async def test_refresh_raises_on_401(self, oauth, session):
+        with aioresponses() as m:
+            m.post(TOKEN_URL, status=401)
+            with pytest.raises(aiohttp.ClientResponseError) as err:
+                await oauth.refresh(session, "expired-refresh-token")
+            assert err.value.status == 401
 
 
 class TestOAuthCredentials:
@@ -212,75 +222,75 @@ def samsung_auth():
 class TestSamsungAccountLogin:
     """Test the two-step headless Samsung Account login flow."""
 
-    def test_login_success(self, samsung_auth):
-        with rm.Mocker() as m:
-            m.post(SAMSUNG_AUTH_URL, json={"userauth_token": "utoken-123"})
+    async def test_login_success(self, samsung_auth, session):
+        with aioresponses() as m:
+            m.post(SAMSUNG_AUTH_URL, payload={"userauth_token": "utoken-123"})
             m.post(
                 SAMSUNG_TOKEN_URL,
-                json={"token": {"access_token": "bearer-abc"}},
+                payload={"token": {"access_token": "bearer-abc"}},
             )
-            creds = samsung_auth.login()
+            creds = await samsung_auth.login(session)
 
         assert creds.access_token == "bearer-abc"
         assert creds.userauth_token == "utoken-123"
 
-    def test_step1_sends_email_and_password(self, samsung_auth):
-        with rm.Mocker() as m:
-            m.post(SAMSUNG_AUTH_URL, json={"userauth_token": "tok"})
-            m.post(SAMSUNG_TOKEN_URL, json={"token": {"access_token": "a"}})
-            samsung_auth.login()
+    async def test_step1_sends_email_and_password(self, samsung_auth, session):
+        with aioresponses() as m:
+            m.post(SAMSUNG_AUTH_URL, payload={"userauth_token": "tok"})
+            m.post(SAMSUNG_TOKEN_URL, payload={"token": {"access_token": "a"}})
+            await samsung_auth.login(session)
 
-        step1_body = m.request_history[0].body
-        assert "login_id=user%40example.com" in step1_body or "login_id=user@example.com" in step1_body
-        assert "password=my-password" in step1_body
-        assert "signin_client_id=test-signin-id" in step1_body
-        assert "signin_client_secret=test-signin-secret" in step1_body
-        assert "login_id_type=email_id" in step1_body
+        step1 = last_call(m, 0)["data"]
+        assert step1["login_id"] == "user@example.com"
+        assert step1["password"] == "my-password"
+        assert step1["signin_client_id"] == "test-signin-id"
+        assert step1["signin_client_secret"] == "test-signin-secret"
+        assert step1["login_id_type"] == "email_id"
 
-    def test_step2_sends_userauth_token(self, samsung_auth):
-        with rm.Mocker() as m:
-            m.post(SAMSUNG_AUTH_URL, json={"userauth_token": "utoken-xyz"})
-            m.post(SAMSUNG_TOKEN_URL, json={"token": {"access_token": "a"}})
-            samsung_auth.login()
+    async def test_step2_sends_userauth_token(self, samsung_auth, session):
+        with aioresponses() as m:
+            m.post(SAMSUNG_AUTH_URL, payload={"userauth_token": "utoken-xyz"})
+            m.post(SAMSUNG_TOKEN_URL, payload={"token": {"access_token": "a"}})
+            await samsung_auth.login(session)
 
-        step2_body = m.request_history[1].body
-        assert "userauth_token=utoken-xyz" in step2_body
-        assert "client_id=test-client-id" in step2_body
-        assert "com.samsung.android.oneconnect" in step2_body
+        step2 = last_call(m, 1)["data"]
+        assert step2["userauth_token"] == "utoken-xyz"
+        assert step2["client_id"] == "test-client-id"
+        assert step2["package"] == "com.samsung.android.oneconnect"
 
-    def test_step1_401_raises_auth_error(self, samsung_auth):
-        with rm.Mocker() as m:
-            m.post(SAMSUNG_AUTH_URL, status_code=401)
+    async def test_step1_401_raises_auth_error(self, samsung_auth, session):
+        with aioresponses() as m:
+            m.post(SAMSUNG_AUTH_URL, status=401)
             with pytest.raises(AuthError, match="Invalid Samsung Account"):
-                samsung_auth.login()
+                await samsung_auth.login(session)
 
-    def test_step1_403_raises_auth_error_with_2fa_hint(self, samsung_auth):
-        with rm.Mocker() as m:
-            m.post(SAMSUNG_AUTH_URL, status_code=403)
+    async def test_step1_403_raises_auth_error_with_2fa_hint(self, samsung_auth, session):
+        with aioresponses() as m:
+            m.post(SAMSUNG_AUTH_URL, status=403)
             with pytest.raises(AuthError, match="2FA"):
-                samsung_auth.login()
+                await samsung_auth.login(session)
 
-    def test_step1_missing_userauth_token_raises(self, samsung_auth):
-        with rm.Mocker() as m:
-            m.post(SAMSUNG_AUTH_URL, json={"error": "some_error"})
+    async def test_step1_missing_userauth_token_raises(self, samsung_auth, session):
+        with aioresponses() as m:
+            m.post(SAMSUNG_AUTH_URL, payload={"error": "some_error"})
             with pytest.raises(AuthError, match="userauth_token"):
-                samsung_auth.login()
+                await samsung_auth.login(session)
 
-    def test_step2_missing_token_raises(self, samsung_auth):
-        with rm.Mocker() as m:
-            m.post(SAMSUNG_AUTH_URL, json={"userauth_token": "tok"})
-            m.post(SAMSUNG_TOKEN_URL, json={"error": "invalid_grant"})
+    async def test_step2_missing_token_raises(self, samsung_auth, session):
+        with aioresponses() as m:
+            m.post(SAMSUNG_AUTH_URL, payload={"userauth_token": "tok"})
+            m.post(SAMSUNG_TOKEN_URL, payload={"error": "invalid_grant"})
             with pytest.raises(AuthError, match="Token exchange failed"):
-                samsung_auth.login()
+                await samsung_auth.login(session)
 
-    def test_step1_content_type_header(self, samsung_auth):
-        with rm.Mocker() as m:
-            m.post(SAMSUNG_AUTH_URL, json={"userauth_token": "tok"})
-            m.post(SAMSUNG_TOKEN_URL, json={"token": {"access_token": "a"}})
-            samsung_auth.login()
+    async def test_step1_content_type_header(self, samsung_auth, session):
+        with aioresponses() as m:
+            m.post(SAMSUNG_AUTH_URL, payload={"userauth_token": "tok"})
+            m.post(SAMSUNG_TOKEN_URL, payload={"token": {"access_token": "a"}})
+            await samsung_auth.login(session)
 
         assert (
-            m.request_history[0].headers["Content-Type"]
+            last_call(m, 0)["headers"]["Content-Type"]
             == "application/x-www-form-urlencoded;charset=UTF-8"
         )
 

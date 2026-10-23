@@ -69,34 +69,32 @@ async def test_token_update_does_not_reload_but_option_change_does():
 
 # --- PAT-mode setup -----------------------------------------------------------------
 
-async def test_pat_setup_uses_rotator_token_and_polls_before_loading_platforms(requests_mock):
+async def test_pat_setup_uses_rotator_token_and_polls_before_loading_platforms(mocked):
     hass = make_hass()
     entry = _ConfigEntry(
         entry_id="pat1",
         data={CONF_AUTH_MODE: AUTH_MODE_PAT, CONF_TOKEN: "stale-saved-pat", CONF_DEVICE_ID: "dev-1"},
         options={CONF_ROTATOR_API_KEY: "k"},
     )
-    requests_mock.get(f"{ROTATOR}/tokens", json={"smartthings_pat": "fresh-pat", "pat_next_rotation_at": 4102444800})
-    requests_mock.get(re.compile(rf"{ROTATOR}/(kics_token|food_token|location_id)"), status_code=404)
-    status = requests_mock.get(
-        "https://api.smartthings.com/v1/devices/dev-1/components/main/status", json={}
-    )
+    mocked.get(f"{ROTATOR}/tokens", payload={"smartthings_pat": "fresh-pat", "pat_next_rotation_at": 4102444800})
+    mocked.get(re.compile(rf"{ROTATOR}/(kics_token|food_token|location_id)"), status=404)
+    mocked.get("https://api.smartthings.com/v1/devices/dev-1/components/main/status", payload={})
 
     assert await async_setup_entry(hass, entry) is True
 
     runtime = entry.runtime_data
     assert runtime.hub.token == "fresh-pat"
     assert runtime.coordinator.food_coordinator is None          # no food token -> no inventory
-    assert status.call_count == 1                               # first refresh happened during setup
-    assert requests_mock.request_history[0].headers["Authorization"] == "Bearer k"
+    assert mocked.count("components/main/status") == 1          # first refresh happened during setup
+    assert mocked.calls[0].kwargs["headers"]["Authorization"] == "Bearer k"   # rotator API key is sent
     hass.config_entries.async_update_entry.assert_called()      # new PAT saved to the entry
     hass.config_entries.async_forward_entry_setups.assert_awaited_once()
 
 
-async def test_pat_setup_without_any_token_is_not_ready(requests_mock):
+async def test_pat_setup_without_any_token_is_not_ready(mocked):
     hass = make_hass()
     entry = _ConfigEntry(entry_id="pat2", data={CONF_AUTH_MODE: AUTH_MODE_PAT, CONF_DEVICE_ID: "d"})
-    requests_mock.get(re.compile(rf"{ROTATOR}/.*"), status_code=503)
+    mocked.get(re.compile(rf"{ROTATOR}/.*"), status=503)
     with pytest.raises(ConfigEntryNotReady) as err:
         await async_setup_entry(hass, entry)
     assert err.value.translation_key == "no_token"

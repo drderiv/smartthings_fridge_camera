@@ -12,6 +12,13 @@ The script uses the known SmartThings app client IDs (from the decompiled APK).
 Does NOT support 2FA-enabled Samsung accounts.
 """
 
+import argparse
+import asyncio
+import os
+import sys
+
+import aiohttp
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # conftest installs full HA stubs so scripts run standalone without Home Assistant
@@ -24,27 +31,31 @@ from custom_components.samsung_familyhub_fridge.auth import (
 )
 
 
+async def _login(email: str, password: str):
+    async with aiohttp.ClientSession() as session:
+        print("Step 1: Logging in to Samsung Account...")
+        auth = SamsungAccountAuth(
+            email=email,
+            password=password,
+            signin_client_id=SAMSUNG_LOGIN_CLIENT_ID,
+            signin_client_secret="",  # Not needed for requestAuthentication
+        )
+        creds = await auth.login(session)
+        print(f"  Got userauth_token: {creds.userauth_token[:20]}...")
+
+        print("Step 2: Exchanging for IoT-scoped token...")
+        return await get_samsung_iot_token(
+            session, userauth_token=creds.userauth_token, login_id=email
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Get Samsung IoT refresh token")
     parser.add_argument("--email", required=True)
     parser.add_argument("--password", required=True)
     args = parser.parse_args()
 
-    print("Step 1: Logging in to Samsung Account...")
-    auth = SamsungAccountAuth(
-        email=args.email,
-        password=args.password,
-        signin_client_id=SAMSUNG_LOGIN_CLIENT_ID,
-        signin_client_secret="",  # Not needed for requestAuthentication
-    )
-    creds = auth.login()
-    print(f"  Got userauth_token: {creds.userauth_token[:20]}...")
-
-    print("Step 2: Exchanging for IoT-scoped token...")
-    iot = get_samsung_iot_token(
-        userauth_token=creds.userauth_token,
-        login_id=args.email,
-    )
+    iot = asyncio.run(_login(args.email, args.password))
     print(f"  Access token:  {iot.access_token[:20]}...")
     print(f"  Refresh token: {iot.refresh_token[:20]}...")
 

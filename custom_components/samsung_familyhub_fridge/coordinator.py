@@ -6,7 +6,7 @@ import time
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-import requests
+import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -68,7 +68,7 @@ class FridgeCoordinator(DataUpdateCoordinator[None]):
         now = time.time()
         if not force and self.hub.token and self._pat_expires_at and now < self._pat_expires_at:
             return False
-        found = await self.hass.async_add_executor_job(self._rotator.fetch_token, "/pat")
+        found = await self._rotator.fetch_token("/pat")
         if found is None:
             self._pat_expires_at = now + PAT_RETRY_DELAY
             return False
@@ -103,7 +103,7 @@ class FridgeCoordinator(DataUpdateCoordinator[None]):
                     "clears. A longer poll interval (Configure) or fewer clients on this token helps."
                 )
             return
-        except (requests.RequestException, ValueError, KeyError) as err:
+        except (aiohttp.ClientError, TimeoutError, ValueError, KeyError) as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="cannot_connect",
@@ -125,14 +125,13 @@ class FridgeCoordinator(DataUpdateCoordinator[None]):
 
     async def _async_poll(self) -> None:
         hub = self.hub
-        run = self.hass.async_add_executor_job
 
         if hub.device_id is None:
             _LOGGER.debug("No device_id; fetching the device list")
-            hub.set_device_status(await run(hub.get_all_device_status))
+            hub.set_device_status(await hub.get_all_device_status())
             if hub.device_id is None:
                 return
-        hub.set_current_device_status(await run(hub.get_current_device_status))
+        hub.set_current_device_status(await hub.get_current_device_status())
         hub.extract_device_data()
         file_ids = hub.get_file_ids()
         _LOGGER.debug(
@@ -144,12 +143,12 @@ class FridgeCoordinator(DataUpdateCoordinator[None]):
             await self._async_download(file_ids)
         if hub.should_update:
             _LOGGER.debug("Door closed; asking the fridge to refresh its camera images")
-            await run(hub.update_camera)
+            await hub.update_camera()
             hub.should_update = False
 
     async def _async_download(self, file_ids: list[str]) -> None:
         _LOGGER.debug("file IDs changed: %s -> %s; downloading images", self.last_file_ids, file_ids)
-        if await self.hass.async_add_executor_job(self.hub.download_images):
+        if await self.hub.download_images():
             self.last_updated_at = time.time()
             self.last_file_ids = file_ids
             self._download_failures = 0

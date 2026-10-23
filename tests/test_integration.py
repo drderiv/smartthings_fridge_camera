@@ -59,8 +59,8 @@ def hass():
 
 
 @pytest.fixture
-def hub(hass, smartthings_token, device_id):
-    return FamilyHub(token=smartthings_token, device_id=device_id or "")
+def hub(session, smartthings_token, device_id):
+    return FamilyHub(session, token=smartthings_token, device_id=device_id or "")
 
 
 # ---------------------------------------------------------------------------
@@ -73,26 +73,26 @@ class TestRealAuthentication:
     """Verify we can authenticate against the real SmartThings API."""
 
     @needs_token
-    def test_valid_token_returns_data(self, hub):
+    async def test_valid_token_returns_data(self, hub):
         """A valid token should return a dict with 'items' from the devices endpoint."""
-        result = hub.get_all_device_status()
+        result = await hub.get_all_device_status()
         assert isinstance(result, dict), f"Expected dict, got {type(result)}"
         assert "items" in result, (
             f"Expected 'items' key in response. Got keys: {list(result.keys())}"
         )
 
     @needs_token
-    def test_invalid_token_raises_auth_error(self, hass):
+    async def test_invalid_token_raises_auth_error(self, hass, session):
         """A bogus token should trigger a 401/403 and raise AuthenticationError."""
-        bad_hub = FamilyHub(token="this-is-not-a-real-token", device_id="")
+        bad_hub = FamilyHub(session, token="this-is-not-a-real-token", device_id="")
         with pytest.raises(AuthenticationError):
-            bad_hub.get_all_device_status()
+            await bad_hub.get_all_device_status()
 
     @needs_token
     @pytest.mark.asyncio
     async def test_authenticate_method_succeeds(self, hass, hub):
         """A valid token returns the account's device list."""
-        result = bool(await hass.async_add_executor_job(hub.get_all_device_status))
+        result = bool(await hub.get_all_device_status())
         assert result is True
 
 
@@ -106,16 +106,16 @@ class TestDeviceDiscovery:
     """Verify device discovery works against the real API."""
 
     @needs_token
-    def test_device_list_has_entries(self, hub):
+    async def test_device_list_has_entries(self, hub):
         """The items list should contain at least one device."""
-        result = hub.get_all_device_status()
+        result = await hub.get_all_device_status()
         assert len(result["items"]) > 0, "No devices found in account"
 
     @needs_token
-    def test_auto_discover_device_id(self, hass, smartthings_token):
+    async def test_auto_discover_device_id(self, hass, smartthings_token, session):
         """When no device_id is provided, set_device_id should find one."""
-        hub = FamilyHub(token=smartthings_token, device_id="")
-        status = hub.get_all_device_status()
+        hub = FamilyHub(session, token=smartthings_token, device_id="")
+        status = await hub.get_all_device_status()
         hub.set_device_status(status)
         hub._device_id = None
         hub.set_device_id()
@@ -137,9 +137,9 @@ class TestDeviceStatus:
 
     @needs_token
     @needs_device
-    def test_get_current_device_status(self, hub):
+    async def test_get_current_device_status(self, hub):
         """Should return a dict (the device's component/main status)."""
-        result = hub.get_current_device_status()
+        result = await hub.get_current_device_status()
         assert isinstance(result, dict), f"Expected dict, got {type(result)}"
         # Should not be an error response
         if "error" in result:
@@ -147,32 +147,32 @@ class TestDeviceStatus:
 
     @needs_token
     @needs_device
-    def test_extract_device_data_does_not_crash(self, hub):
+    async def test_extract_device_data_does_not_crash(self, hub):
         """extract_device_data should handle whatever the real API returns."""
-        status = hub.get_current_device_status()
+        status = await hub.get_current_device_status()
         hub.set_current_device_status(status)
         # Should not raise, regardless of what keys are present
         hub.extract_device_data()
 
     @needs_token
     @needs_device
-    def test_get_file_ids_returns_list(self, hub):
+    async def test_get_file_ids_returns_list(self, hub):
         """get_file_ids should return a list (possibly empty if no images yet)."""
-        status = hub.get_current_device_status()
+        status = await hub.get_current_device_status()
         hub.set_current_device_status(status)
         file_ids = hub.get_file_ids()
         assert isinstance(file_ids, list)
 
     @needs_token
     @needs_device
-    def test_download_images_when_available(self, hub):
+    async def test_download_images_when_available(self, hub):
         """If file IDs exist, download_images should fetch image bytes."""
-        status = hub.get_current_device_status()
+        status = await hub.get_current_device_status()
         hub.set_current_device_status(status)
         file_ids = hub.get_file_ids()
         if not file_ids:
             pytest.skip("No camera images available on device")
-        hub.download_images()
+        await hub.download_images()
         for i, img in enumerate(hub.downloaded_images):
             if img is not None:
                 assert isinstance(img, bytes)
@@ -189,31 +189,31 @@ class TestTokenExpiryDetection:
     """Verify the full auth error → detection → recovery cycle against real API."""
 
     @needs_token
-    def test_bad_token_detected_on_device_status(self, hass):
-        bad_hub = FamilyHub(token="expired-fake-token", device_id="any-device")
+    async def test_bad_token_detected_on_device_status(self, hass, session):
+        bad_hub = FamilyHub(session, token="expired-fake-token", device_id="any-device")
         with pytest.raises(AuthenticationError):
-            bad_hub.get_current_device_status()
+            await bad_hub.get_current_device_status()
 
     @needs_token
-    def test_bad_token_detected_on_update_camera(self, hass):
-        bad_hub = FamilyHub(token="expired-fake-token", device_id="any-device")
+    async def test_bad_token_detected_on_update_camera(self, hass, session):
+        bad_hub = FamilyHub(session, token="expired-fake-token", device_id="any-device")
         with pytest.raises(AuthenticationError):
-            bad_hub.update_camera()
+            await bad_hub.update_camera()
 
     @needs_token
-    def test_recovery_after_token_update(self, hass, smartthings_token):
+    async def test_recovery_after_token_update(self, hass, smartthings_token, session):
         """Simulate: start with bad token → fail → update token → succeed."""
-        hub = FamilyHub(token="bad-token", device_id="")
+        hub = FamilyHub(session, token="bad-token", device_id="")
 
         # 1. Fails with bad token
         with pytest.raises(AuthenticationError):
-            hub.get_all_device_status()
+            await hub.get_all_device_status()
 
         # 2. "Re-authenticate" with good token
         hub.update_token(smartthings_token)
 
         # 3. Now succeeds
-        result = hub.get_all_device_status()
+        result = await hub.get_all_device_status()
         assert isinstance(result, dict)
         assert "items" in result
 
@@ -230,9 +230,9 @@ class TestCoordinatorRealApi:
     @needs_token
     @needs_device
     @pytest.mark.asyncio
-    async def test_coordinator_full_poll_cycle(self, hass, smartthings_token, device_id):
+    async def test_coordinator_full_poll_cycle(self, hass, smartthings_token, device_id, session):
         """Run one full coordinator poll cycle against the real API."""
-        hub = FamilyHub(token=smartthings_token, device_id=device_id)
+        hub = FamilyHub(session, token=smartthings_token, device_id=device_id)
         coordinator = FridgeCoordinator(hass, MagicMock(), hub)
 
         # Pre-populate so coordinator takes the status-fetch path
@@ -246,11 +246,11 @@ class TestCoordinatorRealApi:
 
     @needs_token
     @pytest.mark.asyncio
-    async def test_coordinator_bad_token_triggers_auth_failed(self, hass):
+    async def test_coordinator_bad_token_triggers_auth_failed(self, hass, session):
         """Coordinator should raise ConfigEntryAuthFailed with bad credentials."""
         from tests.conftest import _ConfigEntryAuthFailed
 
-        hub = FamilyHub(token="invalid-token", device_id="fake-device")
+        hub = FamilyHub(session, token="invalid-token", device_id="fake-device")
         coordinator = FridgeCoordinator(hass, MagicMock(), hub)
 
         # Force the code path that calls get_current_device_status
@@ -281,7 +281,7 @@ class TestOAuthTokenRefresh:
     """Verify the OAuth refresh flow works against the real SmartThings API."""
 
     @needs_credentials
-    def test_refresh_produces_valid_token(self, request):
+    async def test_refresh_produces_valid_token(self, request, session):
         """Refreshing via OAuth should yield a token that works with the API."""
         import json
         from custom_components.samsung_familyhub_fridge.auth import SmartThingsOAuth
@@ -298,21 +298,20 @@ class TestOAuthTokenRefresh:
             client_id=creds["client_id"],
             client_secret=creds["client_secret"],
         )
-        new_creds = oauth.refresh(creds["refresh_token"])
+        new_creds = await oauth.refresh(session, creds["refresh_token"])
 
         assert new_creds.access_token
         assert new_creds.refresh_token
         assert new_creds.expires_in > 0
 
         # Verify the new token actually works against the API
-        hass = _HomeAssistant()
-        hub = FamilyHub(token=new_creds.access_token, device_id="")
-        result = hub.get_all_device_status()
+        hub = FamilyHub(session, token=new_creds.access_token, device_id="")
+        result = await hub.get_all_device_status()
         assert isinstance(result, dict)
         assert "items" in result
 
     @needs_credentials
-    def test_refreshed_token_differs_from_original(self, request):
+    async def test_refreshed_token_differs_from_original(self, request, session):
         """Each refresh should return a new token pair."""
         import json
         from custom_components.samsung_familyhub_fridge.auth import SmartThingsOAuth
@@ -329,8 +328,8 @@ class TestOAuthTokenRefresh:
             client_id=creds["client_id"],
             client_secret=creds["client_secret"],
         )
-        first = oauth.refresh(creds["refresh_token"])
-        second = oauth.refresh(first.refresh_token)
+        first = await oauth.refresh(session, creds["refresh_token"])
+        second = await oauth.refresh(session, first.refresh_token)
 
         # Tokens should be different on each refresh
         assert first.access_token != second.access_token

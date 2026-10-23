@@ -49,13 +49,13 @@ def _make_hass():
     return hass
 
 
-def _stub_network(requests_mock, device_id):
+def _stub_network(mocked, device_id):
     """Setup now polls SmartThings once and probes the rotator; give both quiet answers."""
     import re
 
-    requests_mock.get(re.compile(r"http://127\.0\.0\.1:8765/.*"), status_code=404)
-    requests_mock.get(
-        f"https://api.smartthings.com/v1/devices/{device_id}/components/main/status", json={}
+    mocked.get(re.compile(r"http://127\.0\.0\.1:8765/.*"), status=404)
+    mocked.get(
+        f"https://api.smartthings.com/v1/devices/{device_id}/components/main/status", payload={}
     )
 
 
@@ -70,7 +70,7 @@ def _make_flow(hass) -> ConfigFlow:
 # ---------------------------------------------------------------------------
 
 
-async def test_setup_entry_standalone_oauth_refreshes_token(requests_mock):
+async def test_setup_entry_standalone_oauth_refreshes_token(mocked):
     """async_setup_entry with standalone_oauth uses the refreshed access token."""
     hass = _make_hass()
     entry = _ConfigEntry(
@@ -84,10 +84,10 @@ async def test_setup_entry_standalone_oauth_refreshes_token(requests_mock):
         },
     )
 
-    _stub_network(requests_mock, "device-abc")
-    requests_mock.post(
+    _stub_network(mocked, "device-abc")
+    mocked.post(
         TOKEN_URL,
-        json={
+        payload={
             "access_token": "fresh-access-token",
             "refresh_token": "old-refresh-token",
             "token_type": "bearer",
@@ -112,7 +112,7 @@ async def test_setup_entry_standalone_oauth_refreshes_token(requests_mock):
 # ---------------------------------------------------------------------------
 
 
-async def test_setup_entry_standalone_oauth_with_samsung_iot(requests_mock):
+async def test_setup_entry_standalone_oauth_with_samsung_iot(mocked):
     """async_setup_entry with standalone_oauth + IoT token sets samsung_iot_headers."""
     hass = _make_hass()
     entry = _ConfigEntry(
@@ -128,11 +128,11 @@ async def test_setup_entry_standalone_oauth_with_samsung_iot(requests_mock):
         },
     )
 
-    _stub_network(requests_mock, "device-xyz")
+    _stub_network(mocked, "device-xyz")
     # Mock SmartThings token refresh
-    requests_mock.post(
+    mocked.post(
         TOKEN_URL,
-        json={
+        payload={
             "access_token": "fresh-st-access-token",
             "refresh_token": "st-refresh-token",
             "token_type": "bearer",
@@ -141,9 +141,9 @@ async def test_setup_entry_standalone_oauth_with_samsung_iot(requests_mock):
     )
 
     # Mock Samsung IoT token refresh
-    requests_mock.post(
+    mocked.post(
         "https://us-auth2.samsungosp.com/auth/oauth2/token",
-        json={
+        payload={
             "access_token": "fresh-iot-access-token",
             "refresh_token": "iot-refresh-token",
         },
@@ -224,7 +224,7 @@ async def test_reauth_pat_routes_to_reauth_confirm():
     assert result["step_id"] == "reauth_confirm"
 
 
-async def test_standalone_oauth_refresher_persists_rotated_refresh_token(requests_mock):
+async def test_standalone_oauth_refresher_persists_rotated_refresh_token(mocked):
     """The hub's refresher exchanges the saved refresh token and stores the rotated one."""
     hass = _make_hass()
     entry = _ConfigEntry(
@@ -237,13 +237,16 @@ async def test_standalone_oauth_refresher_persists_rotated_refresh_token(request
             CONF_DEVICE_ID: "device-abc",
         },
     )
-    _stub_network(requests_mock, "device-abc")
-    requests_mock.post(
+    _stub_network(mocked, "device-abc")
+    mocked.post(
         TOKEN_URL,
-        [
-            {"json": {"access_token": "access-1", "refresh_token": "refresh-2", "expires_in": 86400}},
-            {"json": {"access_token": "access-2", "refresh_token": "refresh-3", "expires_in": 86400}},
-        ],
+        payload={"access_token": "access-1", "refresh_token": "refresh-2", "expires_in": 86400},
+        repeat=False,
+    )
+    mocked.post(
+        TOKEN_URL,
+        payload={"access_token": "access-2", "refresh_token": "refresh-3", "expires_in": 86400},
+        repeat=False,
     )
 
     from custom_components.samsung_familyhub_fridge import async_setup_entry

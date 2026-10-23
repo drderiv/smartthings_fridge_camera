@@ -2,20 +2,25 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import requests
+import aiohttp
 
+from .auth import refresh_samsung_iot_token
 from .const import CID, DEFAULT_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
 
+API_URL = "https://api.smartthings.com/v1"
+CLIENT_URL = "https://client.smartthings.com"
 SAMSUNG_AUTH_SERVER = "https://us-auth2.samsungosp.com"
 TOKEN_REFRESH_MARGIN = 300  # refresh OAuth access tokens this many seconds before expiry
 DEFAULT_TOKEN_LIFETIME = 3600
+CAMERA_REFRESH_RESOURCE = "/udo/contents/provider/vs/0"
 
 
 class AuthenticationError(Exception):
@@ -30,17 +35,19 @@ class FamilyHub:
     """SmartThings Family Hub fridge API client.
 
     The caller supplies a bearer token (a PAT, or an OAuth access token) and may attach a
-    ``token_refresher`` so OAuth access tokens are renewed before they expire. All HTTP
-    methods block; call them from an executor thread.
+    ``token_refresher`` so OAuth access tokens are renewed before they expire. Network
+    failures surface as ``aiohttp.ClientError`` / ``TimeoutError`` / ``ValueError``.
     """
 
     def __init__(
         self,
+        session: aiohttp.ClientSession,
         token: str,
         device_id: str | None = None,
         *,
         on_iot_refresh_token: Callable[[str], None] | None = None,
     ) -> None:
+        self._session = session
         self._device_id = device_id
         self.token = token
         self._headers = {"Authorization": f"Bearer {token}"}
@@ -107,15 +114,13 @@ class FamilyHub:
         if auth_server is not None:
             self._samsung_iot_auth_server = auth_server
 
-    def _do_samsung_iot_refresh(self) -> None:
+    async def _do_samsung_iot_refresh(self) -> None:
         """Refresh the Samsung IoT token in place and report the rotated refresh token."""
-        from .auth import refresh_samsung_iot_token
-
         try:
-            credentials = refresh_samsung_iot_token(
-                self._samsung_iot_refresh_token, self._samsung_iot_auth_server
+            credentials = await refresh_samsung_iot_token(
+                self._session, self._samsung_iot_refresh_token, self._samsung_iot_auth_server
             )
-        except Exception as err:  # noqa: BLE001 - auth.py raises AuthError/HTTPError/KeyError
+        except Exception as err:  # noqa: BLE001 - AuthError, ClientError, KeyError, ValueError, timeouts
             raise AuthenticationError(f"Samsung IoT token refresh failed: {err}") from err
         self.set_samsung_iot_token(
             credentials.access_token,
@@ -125,253 +130,149 @@ class FamilyHub:
         if self._on_iot_refresh_token is not None:
             self._on_iot_refresh_token(credentials.refresh_token)
 
-    @staticmethod
-    def _is_no_samsung_id_error(response: requests.Response) -> bool:
-        return "No samsung id" in response.text
-
     @property
     def device_id(self) -> str | None:
         if not self._device_id:
             self.set_device_id()
         return self._device_id
 
-    def _check_response(self, response: requests.Response) -> None:
+    # --- HTTP -----------------------------------------------------------------------
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any] | None = None,
+    ) -> tuple[int, bytes, Any]:
+        """Send a request; returns (status, body, response headers)."""
+        async with self._session.request(
+            method,
+            url,
+            headers=headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT),
+        ) as response:
+            return response.status, await response.read(), response.headers
+
+    def _check_response(self, status: int, body: bytes = b"") -> None:
         """Raise for authentication failures and rate limiting; warn on other HTTP errors."""
-        if response.status_code in (401, 403):
+        if status in (401, 403):
             _LOGGER.error(
                 "SmartThings authentication failed (HTTP %s). The token may have expired; "
                 "SmartThings personal access tokens expire after 24 hours",
-                response.status_code,
+                status,
             )
-            raise AuthenticationError(
-                f"SmartThings API returned HTTP {response.status_code}. Token is expired or invalid."
-            )
-        if response.status_code == 429:
+            raise AuthenticationError(f"SmartThings API returned HTTP {status}. Token is expired or invalid.")
+        if status == 429:
             raise RateLimitError("SmartThings API returned HTTP 429")
-        if response.status_code == 400:
+        if status == 400:
             try:
-                error = response.json().get("error", {})
+                error = json.loads(body).get("error", {})
             except (ValueError, AttributeError):
                 error = {}
-            if error.get("code") == "BadRequestError" and "No samsung id" in error.get("message", ""):
+            if (
+                isinstance(error, dict)
+                and error.get("code") == "BadRequestError"
+                and "No samsung id" in error.get("message", "")
+            ):
                 raise AuthenticationError(
                     "No samsung id available: switch to Standalone OAuth or add Samsung Account credentials"
                 )
-        if not response.ok:
-            _LOGGER.warning("SmartThings API request failed: HTTP %s", response.status_code)
+        if status >= 400:
+            _LOGGER.warning("SmartThings API request failed: HTTP %s", status)
 
-    def set_device_status(self, status):
-        """Update device status list if the payload is valid."""
-        if not status or not isinstance(status, dict) or "error" in status:
-            return
-        self._device_status = status
-        self.set_device_id()
+    async def _get_json(self, url: str, what: str) -> Any:
+        status, body, _headers = await self._request("GET", url, headers=self._headers)
+        self._check_response(status, body)
+        data = json.loads(body)
+        if isinstance(data, dict) and "error" in data:
+            _LOGGER.error("SmartThings %s returned an error: %s", what, data["error"])
+        return data
 
-    def set_current_device_status(self, status):
-        """Update current device status if the payload is valid."""
-        if not status or not isinstance(status, dict) or "error" in status:
-            return
-        self._current_device_status = status
-
-    def download_images(self) -> bool:
-        """Download the actual camera images from SmartThings.
-
-        Returns True if at least one image was downloaded successfully.
-        Failed individual downloads preserve the previously-known image,
-        so a transient network error on one image doesn't wipe the others.
-        """
-        if not self._current_device_status or not self.device_id:
-            return False
-
-        file_ids = self.get_file_ids()
-        if not file_ids:
-            return False
-        # Start from the existing images so a partial failure doesn't wipe
-        # slots that we can't refresh this cycle.
-        result = list(self.downloaded_images)
-        while len(result) < len(file_ids):
-            result.append(None)
-
-        successes = 0
-        for idx, file_id in enumerate(file_ids):
-            try:
-                url = (
-                    f"https://client.smartthings.com/udo/file_links/"
-                    f"{file_id}?cid={CID}&di={self.device_id}"
-                )
-                # Use Samsung IoT token if available (OAuth mode);
-                # otherwise use the main token (PAT mode).
-                dl_headers = (
-                    self._samsung_iot_headers
-                    if self._samsung_iot_headers
-                    else self._headers
-                )
-                r = requests.get(
-                    url,
-                    headers=dl_headers,
-                    timeout=DEFAULT_TIMEOUT,
-                )
-                # Samsung IoT in-session refresh: when using IoT headers and the
-                # server returns 401/403 or a 400 'No samsung id' error, attempt
-                # a silent token refresh and retry once before surfacing as
-                # ConfigEntryAuthFailed.
-                if dl_headers is self._samsung_iot_headers:
-                    auth_fail = r.status_code in (401, 403) or (
-                        r.status_code == 400 and self._is_no_samsung_id_error(r)
-                    )
-                    if auth_fail:
-                        if not self._samsung_iot_refresh_token:
-                            raise AuthenticationError(
-                                f"Samsung IoT authentication failed "
-                                f"(HTTP {r.status_code}) — no refresh token available."
-                            )
-                        self._do_samsung_iot_refresh()
-                        r = requests.get(
-                            url,
-                            headers=self._samsung_iot_headers,
-                            timeout=DEFAULT_TIMEOUT,
-                        )
-                self._check_response(r)
-                if not r.ok or not r.content:
-                    raise RuntimeError(f"Download failed with status {r.status_code}")
-                content_type = r.headers.get("content-type", "")
-                _LOGGER.debug(
-                    "download_images[%d]: file_id=%s url=%s status=%s "
-                    "content_type=%s length=%d",
-                    idx,
-                    file_id[:8],
-                    url.split("?")[0][-40:],
-                    r.status_code,
-                    content_type,
-                    len(r.content),
-                )
-                result[idx] = r.content
-                successes += 1
-            except (AuthenticationError, RateLimitError):
-                # Let the coordinator handle reauth / rate limiting.
-                raise
-            except (requests.RequestException, RuntimeError) as err:
-                _LOGGER.warning(
-                    "download_images[%d]: failed to download file_id=%s: %s",
-                    idx,
-                    file_id[:8],
-                    err,
-                )
-                # Keep the previous bytes for this slot (don't overwrite with None)
-
-        self.downloaded_images = result
-        _LOGGER.debug(
-            "download_images: stored %d/%d images, sizes=%s",
-            successes,
-            len(file_ids),
-            [len(i) if i else 0 for i in result],
-        )
-        return successes > 0
-
-    def get_all_device_status(self):
+    async def get_all_device_status(self) -> Any:
         """Get all of the devices in the account."""
-        r = requests.get(
-            "https://client.smartthings.com/devices/status",
-            headers=self._headers,
-            timeout=DEFAULT_TIMEOUT,
-        )
-        self._check_response(r)
-        data = r.json()
-        if isinstance(data, dict) and "error" in data:
-            _LOGGER.error(
-                "SmartThings API returned error: %s", data["error"]
-            )
-        return data
+        return await self._get_json(f"{CLIENT_URL}/devices/status", "device list")
 
-    def get_current_device_status(self):
+    async def get_current_device_status(self) -> Any:
         """Get the current device status."""
-        r = requests.get(
-            f"https://api.smartthings.com/v1/devices/{self.device_id}/components/main/status",
-            headers=self._headers,
-            timeout=DEFAULT_TIMEOUT,
+        return await self._get_json(
+            f"{API_URL}/devices/{self.device_id}/components/main/status", "device status"
         )
-        self._check_response(r)
-        data = r.json()
-        if isinstance(data, dict) and "error" in data:
-            _LOGGER.error(
-                "SmartThings device status returned error: %s", data["error"]
-            )
-        return data
 
-    def get_location_id(self) -> str | None:
+    async def get_location_id(self) -> str | None:
         """Get the SmartThings locationId for the fridge device."""
         if self._location_id:
             return self._location_id
         if not self.device_id:
             return None
         try:
-            r = requests.get(
-                f"https://api.smartthings.com/v1/devices/{self.device_id}",
-                headers=self._headers,
-                timeout=DEFAULT_TIMEOUT,
+            status, body, _headers = await self._request(
+                "GET", f"{API_URL}/devices/{self.device_id}", headers=self._headers
             )
-            if r.ok:
-                loc = r.json().get("locationId")
-                if loc:
-                    _LOGGER.debug("Discovered SmartThings locationId for fridge")
-                    self._location_id = loc
-                    return loc
-        except (requests.RequestException, ValueError) as err:
+            if status == 200 and (location := json.loads(body).get("locationId")):
+                _LOGGER.debug("Discovered SmartThings locationId for fridge")
+                self._location_id = location
+                return location
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             _LOGGER.debug("Could not fetch locationId for device %s: %s", self.device_id, err)
         return None
 
-    def extract_device_data(self):
-        """Extract contact sensor data to detect door close events."""
-        if not self._current_device_status:
+    async def update_camera(self) -> None:
+        """Send the reverse-engineered refresh command to the fridge.
+
+        The single OCF resource at /udo/contents/provider/vs/0 holds all of the camera
+        images; the coordinator sends this on door-close events.
+        """
+        if not self.device_id:
             return
-        try:
-            contact = self._current_device_status["contactSensor"]["contact"]
-        except KeyError:
-            _LOGGER.debug(
-                "contactSensor data not available in device status"
-            )
-            return
-        _LOGGER.debug(
-            "contactSensor: value=%s timestamp=%s (last_closed=%s)",
-            contact.get("value"),
-            contact.get("timestamp"),
-            self.last_closed,
+        status, body, _headers = await self._request(
+            "POST",
+            f"{API_URL}/devices/{self.device_id}/commands",
+            headers=self._headers,
+            payload={
+                "commands": [
+                    {
+                        "component": "main",
+                        "capability": "execute",
+                        "command": "execute",
+                        "arguments": [
+                            CAMERA_REFRESH_RESOURCE,
+                            {"x.com.samsung.da.control": {"x.com.samsung.da.command": "refresh"}},
+                        ],
+                    }
+                ]
+            },
         )
-        # Trigger a refresh on first poll after startup, so users see fresh
-        # images without having to physically open and close the fridge door.
-        first_poll = self.last_closed is None
-        if contact["value"] == "closed" and (
-            first_poll or contact["timestamp"] != self.last_closed
-        ):
-            self.last_closed = contact["timestamp"]
-            self.should_update = True
-            if first_poll:
-                _LOGGER.debug("First poll after startup — requesting camera refresh")
+        self._check_response(status, body)
+        _LOGGER.debug("update_camera: status=%s body=%s", status, body[:300])
 
-    def get_file_ids(self):
-        """Get the file IDs for the camera images."""
-        if not self._current_device_status:
-            return []
-        try:
-            element = self._current_device_status["samsungce.viewInside"]["contents"]
-            return [i["fileId"] for i in element["value"]]
-        except (KeyError, TypeError):
-            _LOGGER.debug(
-                "samsungce.viewInside data not available in device status"
-            )
-            return []
+    # --- status handling --------------------------------------------------------------
 
-    def set_device_id(self):
-        """Extract device ID from the device status list."""
+    def set_device_status(self, status: Any) -> None:
+        """Update the device list if the payload is valid."""
+        if not status or not isinstance(status, dict) or "error" in status:
+            return
+        self._device_status = status
+        self.set_device_id()
+
+    def set_current_device_status(self, status: Any) -> None:
+        """Update the current device status if the payload is valid."""
+        if not status or not isinstance(status, dict) or "error" in status:
+            return
+        self._current_device_status = status
+
+    def set_device_id(self) -> None:
+        """Extract the fridge's device ID from the device list."""
         if not self._device_status:
             return
         try:
             items = self._device_status["items"]
         except (KeyError, TypeError):
             _LOGGER.error(
-                "Unexpected device status format — missing 'items' key. "
-                "This may indicate an expired token or API error. "
-                "Response keys: %s",
+                "Unexpected device status format: missing 'items'. This may indicate an expired "
+                "token or API error. Response keys: %s",
                 sorted(self._device_status) if isinstance(self._device_status, dict) else type(self._device_status).__name__,
             )
             return
@@ -383,42 +284,89 @@ class FamilyHub:
                 self._device_id = element["deviceId"]
                 break
 
-    def update_camera(self):
-        """Send the reverse-engineered refresh command to the fridge.
-
-        Uses the single OCF resource at /udo/contents/provider/vs/0 which
-        contains all three camera images. Throttled by the coordinator via
-        contactSensor door-close events.
-        """
-        if not self.device_id:
+    def extract_device_data(self) -> None:
+        """Detect door-close events from the contact sensor."""
+        if not self._current_device_status:
             return
-        r = requests.post(
-            f"https://api.smartthings.com/v1/devices/{self.device_id}/commands",
-            headers=self._headers,
-            json={
-                "commands": [
-                    {
-                        "component": "main",
-                        "capability": "execute",
-                        "command": "execute",
-                        "arguments": [
-                            "/udo/contents/provider/vs/0",
-                            {
-                                "x.com.samsung.da.control": {
-                                    "x.com.samsung.da.command": "refresh"
-                                }
-                            },
-                        ],
-                    }
-                ]
-            },
-            timeout=DEFAULT_TIMEOUT,
-        )
-        self._check_response(r)
+        try:
+            contact = self._current_device_status["contactSensor"]["contact"]
+        except KeyError:
+            _LOGGER.debug("contactSensor data not available in device status")
+            return
         _LOGGER.debug(
-            "update_camera: status=%s body=%s",
-            r.status_code,
-            r.text[:300],
+            "contactSensor: value=%s timestamp=%s (last_closed=%s)",
+            contact.get("value"), contact.get("timestamp"), self.last_closed,
         )
+        # Refresh on the first poll after startup so users see fresh images without having to
+        # physically open and close the door.
+        first_poll = self.last_closed is None
+        if contact["value"] == "closed" and (first_poll or contact["timestamp"] != self.last_closed):
+            self.last_closed = contact["timestamp"]
+            self.should_update = True
+            if first_poll:
+                _LOGGER.debug("First poll after startup; requesting a camera refresh")
 
+    def get_file_ids(self) -> list[str]:
+        """File IDs of the current camera images."""
+        if not self._current_device_status:
+            return []
+        try:
+            element = self._current_device_status["samsungce.viewInside"]["contents"]
+            return [item["fileId"] for item in element["value"]]
+        except (KeyError, TypeError):
+            _LOGGER.debug("samsungce.viewInside data not available in device status")
+            return []
 
+    # --- images -----------------------------------------------------------------------
+
+    async def _download(self, url: str) -> bytes:
+        """Download one image, refreshing the Samsung IoT token once if it was rejected."""
+        headers = self._samsung_iot_headers or self._headers
+        status, body, _response_headers = await self._request("GET", url, headers=headers)
+        if headers is self._samsung_iot_headers and (
+            status in (401, 403) or (status == 400 and b"No samsung id" in body)
+        ):
+            if not self._samsung_iot_refresh_token:
+                raise AuthenticationError(
+                    f"Samsung IoT authentication failed (HTTP {status}); no refresh token available."
+                )
+            await self._do_samsung_iot_refresh()
+            status, body, _response_headers = await self._request(
+                "GET", url, headers=self._samsung_iot_headers
+            )
+        self._check_response(status, body)
+        if status >= 400 or not body:
+            raise RuntimeError(f"Download failed with status {status}")
+        return body
+
+    async def download_images(self) -> bool:
+        """Download the camera images; True if at least one succeeded.
+
+        A failed download keeps the previous image for that slot, so one transient error
+        doesn't wipe the others.
+        """
+        if not self._current_device_status or not self.device_id:
+            return False
+        file_ids = self.get_file_ids()
+        if not file_ids:
+            return False
+
+        result = list(self.downloaded_images)
+        result.extend([None] * (len(file_ids) - len(result)))
+        successes = 0
+        for index, file_id in enumerate(file_ids):
+            url = f"{CLIENT_URL}/udo/file_links/{file_id}?cid={CID}&di={self.device_id}"
+            try:
+                result[index] = await self._download(url)
+                successes += 1
+            except (AuthenticationError, RateLimitError):
+                raise  # the coordinator handles reauth / rate limiting
+            except (aiohttp.ClientError, TimeoutError, RuntimeError) as err:
+                _LOGGER.warning("download_images[%d]: failed to download file_id=%s: %s", index, file_id[:8], err)
+
+        self.downloaded_images = result
+        _LOGGER.debug(
+            "download_images: stored %d/%d images, sizes=%s",
+            successes, len(file_ids), [len(image) if image else 0 for image in result],
+        )
+        return successes > 0

@@ -449,6 +449,29 @@ class _Store:
 
 
 ha_helpers_storage = _make_module("homeassistant.helpers.storage", Store=_Store)
+
+
+_TEST_SESSIONS: list = []
+
+
+def _async_get_clientsession(hass, *args, **kwargs):
+    """Stand-in for homeassistant.helpers.aiohttp_client.async_get_clientsession."""
+    import aiohttp
+
+    session = getattr(hass, "_test_session", None)
+    if not isinstance(session, aiohttp.ClientSession) or session.closed:
+        session = aiohttp.ClientSession()
+        _TEST_SESSIONS.append(session)
+        try:
+            hass._test_session = session
+        except AttributeError:
+            pass
+    return session
+
+
+ha_helpers_aiohttp_client = _make_module(
+    "homeassistant.helpers.aiohttp_client", async_get_clientsession=_async_get_clientsession
+)
 ha_helpers_device_registry = _make_module("homeassistant.helpers.device_registry", DeviceInfo=_DeviceInfo)
 ha_components_diagnostics = _make_module(
     "homeassistant.components.diagnostics",
@@ -535,26 +558,6 @@ ha_components_http_auth = _make_module(
     async_sign_path=lambda hass, path, expiration, **kw: f"{path}?authSig=mockSignature",
 )
 
-# aiohttp
-class _WebResponse:
-    def __init__(self, body=None, status=200, text=None, **kw):
-        self.body = body
-        self.status = status
-        self.text = text
-
-class _WebFileResponse(_WebResponse):
-    def __init__(self, path, **kw):
-        super().__init__(**kw)
-        self.path = path
-
-aiohttp_web_mod = _make_module(
-    "aiohttp.web",
-    Response=_WebResponse,
-    FileResponse=_WebFileResponse,
-    Request=MagicMock,
-)
-aiohttp_mod = _make_module("aiohttp", web=aiohttp_web_mod)
-
 # components tree
 ha_components = _make_module("homeassistant.components")
 ha_components_camera = _make_module(
@@ -582,8 +585,6 @@ ha_components_update = _make_module(
 
 # Register all in sys.modules
 _modules = {
-    "aiohttp": aiohttp_mod,
-    "aiohttp.web": aiohttp_web_mod,
     "homeassistant": ha,
     "homeassistant.core": ha_core,
     "homeassistant.config_entries": ha_config_entries,
@@ -593,6 +594,7 @@ _modules = {
     "homeassistant.helpers": ha_helpers,
     "homeassistant.helpers.update_coordinator": ha_helpers_update_coordinator,
     "homeassistant.helpers.storage": ha_helpers_storage,
+    "homeassistant.helpers.aiohttp_client": ha_helpers_aiohttp_client,
     "homeassistant.helpers.device_registry": ha_helpers_device_registry,
     "homeassistant.components.diagnostics": ha_components_diagnostics,
     "homeassistant.helpers.entity_platform": ha_helpers_entity_platform,
@@ -625,3 +627,37 @@ except ImportError:
     vol.Coerce = lambda *a, **kw: a[0] if a else None
     vol.Range = lambda *a, **kw: None
     sys.modules["voluptuous"] = vol
+
+
+
+# ---------------------------------------------------------------------------
+# aiohttp fixtures shared by the tests
+# ---------------------------------------------------------------------------
+
+import pytest_asyncio  # noqa: E402
+
+
+@pytest_asyncio.fixture
+async def session():
+    """A real aiohttp session; the aioresponses ``mocked`` fixture intercepts its requests."""
+    import aiohttp
+
+    async with aiohttp.ClientSession() as client_session:
+        yield client_session
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _close_test_sessions():
+    """Close sessions handed out by the async_get_clientsession stand-in."""
+    yield
+    while _TEST_SESSIONS:
+        await _TEST_SESSIONS.pop().close()
+
+
+@pytest.fixture
+def mocked():
+    """Intercept aiohttp requests; register responses with ``mocked.get(url, ...)``."""
+    from tests.fake_aiohttp import aioresponses
+
+    with aioresponses() as intercept:
+        yield intercept

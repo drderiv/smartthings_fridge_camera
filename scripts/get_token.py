@@ -33,7 +33,10 @@ import argparse
 import json
 import sys
 import os
+import asyncio
 import webbrowser
+
+import aiohttp
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -41,6 +44,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tests.conftest  # noqa: F401
 
 from custom_components.samsung_familyhub_fridge.auth import SmartThingsOAuth
+
+
+async def _exchange(oauth: SmartThingsOAuth, code: str):
+    async with aiohttp.ClientSession() as session:
+        return await oauth.exchange_code(session, code)
 
 
 def main() -> None:
@@ -117,7 +125,7 @@ def main() -> None:
     print()
     print("Exchanging authorization code for tokens...")
     try:
-        creds = oauth.exchange_code(code)
+        creds = asyncio.run(_exchange(oauth, code))
     except Exception as e:
         print(f"ERROR: Token exchange failed: {e}", file=sys.stderr)
         sys.exit(1)

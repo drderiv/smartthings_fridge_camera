@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import requests
+import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import AuthenticationError, FamilyHub, RateLimitError
 from .auth import AuthError, SamsungAccountAuth, SmartThingsOAuth
@@ -57,13 +58,13 @@ STEP_PAT_DATA_SCHEMA = vol.Schema(
 
 async def _validate_pat(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
     """Validate a Personal Access Token and resolve the device ID."""
-    hub = FamilyHub(data[CONF_TOKEN], data.get(CONF_DEVICE_ID))
+    hub = FamilyHub(async_get_clientsession(hass), data[CONF_TOKEN], data.get(CONF_DEVICE_ID))
 
     try:
-        status = await hass.async_add_executor_job(hub.get_all_device_status)
+        status = await hub.get_all_device_status()
     except AuthenticationError as err:
         raise InvalidAuth from err
-    except (RateLimitError, requests.RequestException, ValueError) as err:
+    except (RateLimitError, aiohttp.ClientError, TimeoutError, ValueError) as err:
         raise CannotConnect from err
     hub.set_device_status(status)
 
@@ -168,7 +169,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         code = SmartThingsOAuth.extract_code_from_redirect(raw)
                     else:
                         code = raw
-                    creds = await self.hass.async_add_executor_job(oauth.exchange_code, code)
+                    creds = await oauth.exchange_code(async_get_clientsession(self.hass), code)
                 except ValueError:
                     errors["redirect_url_or_code"] = "invalid_redirect_url"
                 except Exception:  # pylint: disable=broad-except
@@ -213,9 +214,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         signin_client_id=SAMSUNG_LOGIN_CLIENT_ID,
                         signin_client_secret=signin_client_secret,
                     )
-                    iot_creds = await self.hass.async_add_executor_job(
-                        samsung_auth.login_iot
-                    )
+                    iot_creds = await samsung_auth.login_iot(async_get_clientsession(self.hass))
                     data[CONF_SAMSUNG_IOT_REFRESH_TOKEN] = iot_creds.refresh_token
                     data[CONF_SAMSUNG_IOT_AUTH_SERVER] = iot_creds.auth_server_url
                 except AuthError as err:
@@ -400,9 +399,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         code = SmartThingsOAuth.extract_code_from_redirect(raw)
                     else:
                         code = raw
-                    creds = await self.hass.async_add_executor_job(
-                        oauth.exchange_code, code
-                    )
+                    creds = await oauth.exchange_code(async_get_clientsession(self.hass), code)
                 except ValueError:
                     errors["redirect_url_or_code"] = "invalid_redirect_url"
                 except Exception:  # pylint: disable=broad-except

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import requests
+import aiohttp
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -31,6 +31,7 @@ from homeassistant.exceptions import (
     HomeAssistantError,
     ServiceValidationError,
 )
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
@@ -110,12 +111,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             hub = entry.runtime_data.hub
             try:
                 await hub.async_ensure_fresh_token()
-                await hass.async_add_executor_job(hub.update_camera)
+                await hub.update_camera()
             except AuthenticationError as err:
                 raise ServiceValidationError(translation_domain=DOMAIN, translation_key="auth_failed") from err
             except RateLimitError as err:
                 raise HomeAssistantError(translation_domain=DOMAIN, translation_key="rate_limited") from err
-            except (requests.RequestException, ValueError) as err:
+            except (aiohttp.ClientError, TimeoutError, ValueError) as err:
                 raise HomeAssistantError(
                     translation_domain=DOMAIN,
                     translation_key="refresh_failed",
@@ -170,17 +171,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: FridgeConfigEntry) -> bo
     """Set up Samsung FamilyHub Fridge from a config entry."""
     auth_mode = entry.data.get(CONF_AUTH_MODE, AUTH_MODE_PAT)
     device_id = entry.data.get(CONF_DEVICE_ID)
-    rotator = RotatorClient.from_entry(entry)
+    session = async_get_clientsession(hass)
+    rotator = RotatorClient.from_entry(session, entry)
     startup: dict[str, Any] = {}
     pat_expiry: float | None = None
 
     if auth_mode == AUTH_MODE_OAUTH:
         raise ConfigEntryAuthFailed(translation_domain=DOMAIN, translation_key="oauth_mode_removed")
     if auth_mode == AUTH_MODE_STANDALONE_OAUTH:
-        hub = await _build_standalone_hub(hass, entry, device_id)
+        hub = await _build_standalone_hub(hass, entry, session, device_id)
         pat_rotator = None
     else:
-        hub, startup, pat_expiry = await _build_pat_hub(hass, entry, rotator, device_id)
+        hub, startup, pat_expiry = await _build_pat_hub(hass, entry, session, rotator, device_id)
         pat_rotator = rotator
 
     coordinator = FridgeCoordinator(
@@ -194,7 +196,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: FridgeConfigEntry) -> bo
     await coordinator.async_config_entry_first_refresh()  # ConfigEntryNotReady / reauth surface here
     entry.async_on_unload(coordinator.async_shutdown)
 
-    coordinator.food_coordinator = await _async_setup_food(hass, entry, hub, rotator, startup)
+    coordinator.food_coordinator = await _async_setup_food(hass, entry, session, hub, rotator, startup)
     if coordinator.food_coordinator is not None:
         entry.async_on_unload(coordinator.food_coordinator.async_shutdown)
 
@@ -205,13 +207,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: FridgeConfigEntry) -> bo
 
 
 async def _build_pat_hub(
-    hass: HomeAssistant, entry: FridgeConfigEntry, rotator: RotatorClient, device_id: str | None
+    hass: HomeAssistant,
+    entry: FridgeConfigEntry,
+    session: aiohttp.ClientSession,
+    rotator: RotatorClient,
+    device_id: str | None,
 ) -> tuple[FamilyHub, dict[str, Any], float | None]:
     """PAT mode: prefer the rotator's current PAT, fall back to the one saved in the entry."""
-    startup = await hass.async_add_executor_job(rotator.tokens)
+    startup = await rotator.tokens()
     token = str(startup.get("smartthings_pat") or "").strip()
     expiry = startup.get("pat_next_rotation_at")
-    if not token and (found := await hass.async_add_executor_job(rotator.fetch_token, "/pat")):
+    if not token and (found := await rotator.fetch_token("/pat")):
         token, expiry = found.token, found.next_rotation_at
     elif token:
         _LOGGER.info("Loaded active tokens from the rotator on startup")
@@ -220,10 +226,12 @@ async def _build_pat_hub(
         raise ConfigEntryNotReady(translation_domain=DOMAIN, translation_key="no_token")
     if entry.data.get(CONF_TOKEN) != token:
         hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_TOKEN: token})
-    return FamilyHub(token, device_id), startup, expiry
+    return FamilyHub(session, token, device_id), startup, expiry
 
 
-async def _build_standalone_hub(hass: HomeAssistant, entry: FridgeConfigEntry, device_id: str | None) -> FamilyHub:
+async def _build_standalone_hub(
+    hass: HomeAssistant, entry: FridgeConfigEntry, session: aiohttp.ClientSession, device_id: str | None
+) -> FamilyHub:
     """Standalone OAuth: exchange the saved refresh token, and keep renewing the access token."""
     client_id = entry.data.get(CONF_OAUTH_CLIENT_ID)
     client_secret = entry.data.get(CONF_OAUTH_CLIENT_SECRET)
@@ -235,9 +243,9 @@ async def _build_standalone_hub(hass: HomeAssistant, entry: FridgeConfigEntry, d
         """Get a new access token and persist the (rotated) refresh token."""
         current = entry.data[CONF_OAUTH_REFRESH_TOKEN]
         try:
-            credentials = await hass.async_add_executor_job(oauth.refresh, current)
-        except requests.HTTPError as err:
-            if err.response is not None and err.response.status_code in (400, 401):
+            credentials = await oauth.refresh(session, current)
+        except aiohttp.ClientResponseError as err:
+            if err.status in (400, 401):
                 raise AuthenticationError("SmartThings refresh token rejected") from err
             raise
         if credentials.refresh_token != current:
@@ -250,7 +258,7 @@ async def _build_standalone_hub(hass: HomeAssistant, entry: FridgeConfigEntry, d
         credentials = await _refresh()
     except AuthenticationError as err:
         raise ConfigEntryAuthFailed(translation_domain=DOMAIN, translation_key="auth_failed") from err
-    except requests.RequestException as err:
+    except (aiohttp.ClientError, TimeoutError) as err:
         raise ConfigEntryNotReady(
             translation_domain=DOMAIN,
             translation_key="cannot_connect",
@@ -262,17 +270,13 @@ async def _build_standalone_hub(hass: HomeAssistant, entry: FridgeConfigEntry, d
             entry, data={**entry.data, CONF_SAMSUNG_IOT_REFRESH_TOKEN: refresh_token}
         )
 
-    def _on_iot_refresh_token(refresh_token: str) -> None:
-        # Called from an executor thread; config entries may only be changed on the event loop.
-        hass.loop.call_soon_threadsafe(_persist_iot_token, refresh_token)
-
-    hub = FamilyHub(credentials.access_token, device_id, on_iot_refresh_token=_on_iot_refresh_token)
+    hub = FamilyHub(session, credentials.access_token, device_id, on_iot_refresh_token=_persist_iot_token)
     hub.set_token_refresher(_refresh, credentials.expires_in)
 
     if iot_refresh := entry.data.get(CONF_SAMSUNG_IOT_REFRESH_TOKEN):
         iot_server = entry.data.get(CONF_SAMSUNG_IOT_AUTH_SERVER, DEFAULT_IOT_AUTH_SERVER)
         try:
-            iot = await hass.async_add_executor_job(refresh_samsung_iot_token, iot_refresh, iot_server)
+            iot = await refresh_samsung_iot_token(session, iot_refresh, iot_server)
         except Exception as err:  # noqa: BLE001 - auth.py raises AuthError/HTTPError/KeyError; images only
             _LOGGER.warning(
                 "Could not refresh the Samsung IoT token; image downloads will fail until resolved: %s", err
@@ -287,6 +291,7 @@ async def _build_standalone_hub(hass: HomeAssistant, entry: FridgeConfigEntry, d
 async def _async_setup_food(
     hass: HomeAssistant,
     entry: FridgeConfigEntry,
+    session: aiohttp.ClientSession,
     hub: FamilyHub,
     rotator: RotatorClient,
     startup: dict[str, Any],
@@ -295,6 +300,7 @@ async def _async_setup_food(
     shared = hass.data.get(DOMAIN, {})
     client = SamsungFoodClient(
         hass,
+        session,
         rotator,
         cache_dir=shared.get("cache_dir") or Path(hass.config.path(CACHE_DIR)),
         view_secret=shared.get("view_secret", ""),

@@ -3,7 +3,6 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
-import requests_mock
 
 from custom_components.samsung_familyhub_fridge.food import SamsungFoodClient
 from custom_components.samsung_familyhub_fridge.rotator import RotatorClient
@@ -20,66 +19,67 @@ def mock_hass():
 
 
 @pytest.fixture
-def client(mock_hass, tmp_path):
+def client(mock_hass, session, tmp_path):
     return SamsungFoodClient(
-        mock_hass, RotatorClient(ROTATOR, "secret-key"), cache_dir=tmp_path / "cache"
+        mock_hass, session, RotatorClient(session, ROTATOR, "secret-key"), cache_dir=tmp_path / "cache"
     )
 
 
-def test_rotator_token_sends_api_key(client):
-    with requests_mock.Mocker() as m:
-        m.get(f"{ROTATOR}/kics_token", json={"token": "kics-abc", "next_rotation_at": int(time.time()) + 3600})
-        assert client._get_rotator_token_sync() == "kics-abc"
-        assert m.last_request.headers["Authorization"] == "Bearer secret-key"
+async def test_rotator_token_sends_api_key(client, mocked):
+    mocked.get(f"{ROTATOR}/kics_token", payload={"token": "kics-abc", "next_rotation_at": int(time.time()) + 3600})
+    assert await client._async_rotator_token() == "kics-abc"
+    assert mocked.calls[-1].kwargs["headers"]["Authorization"] == "Bearer secret-key"
 
 
-def test_no_token_files_or_helpers_are_read(client, tmp_path, monkeypatch, mock_hass):
+async def test_no_token_files_or_helpers_are_read(client, tmp_path, monkeypatch, mock_hass, mocked):
     """A token file in /tmp or an input_text helper must never be picked up."""
     (tmp_path / "kics_food_token.txt").write_text("planted-token")
     monkeypatch.chdir(tmp_path)
     mock_hass.states.get.side_effect = lambda ent: MagicMock(state="helper-token")
-    with requests_mock.Mocker() as m:
-        m.get(f"{ROTATOR}/kics_token", status_code=503)
-        m.get(f"{ROTATOR}/food_token", status_code=503)
-        assert client._get_rotator_token_sync() is None
+    mocked.get(f"{ROTATOR}/kics_token", status=503)
+    mocked.get(f"{ROTATOR}/food_token", status=503)
+    assert await client._async_rotator_token() is None
 
 
-def test_location_id_order_smartthings_then_rotator(client, mock_hass):
-    hub = MagicMock()
-    hub.get_location_id.return_value = "loc-from-smartthings"
-    client._location_lookup = hub.get_location_id
-    with requests_mock.Mocker() as m:
-        m.get(f"{ROTATOR}/location_id", json={"location_id": "loc-from-rotator"})
-        assert client._get_location_id_sync() == "loc-from-smartthings"
+async def test_location_id_order_smartthings_then_rotator(client, mocked):
+    async def from_smartthings():
+        return "loc-from-smartthings"
+
+    async def nothing():
+        return None
+
+    mocked.get(f"{ROTATOR}/location_id", payload={"location_id": "loc-from-rotator"})
+    client._location_lookup = from_smartthings
+    assert await client._async_location_id() == "loc-from-smartthings"
 
     client._location_id = None
-    hub.get_location_id.return_value = None
-    with requests_mock.Mocker() as m:
-        m.get(f"{ROTATOR}/location_id", json={"location_id": "loc-from-rotator"})
-        assert client._get_location_id_sync() == "loc-from-rotator"
+    client._location_lookup = nothing
+    assert await client._async_location_id() == "loc-from-rotator"
 
 
-@pytest.mark.asyncio
-async def test_token_cache_round_trip(client, mock_hass):
+async def test_token_cache_round_trip(client, mock_hass, session):
     client._cached_kics_token = "kics-abc"
     client._kics_expires_at = time.time() + 3600
     client._location_id = "loc-1"
     await client._async_persist_cache()
 
-    restored = SamsungFoodClient(mock_hass, RotatorClient(ROTATOR), cache_dir=client._images.directory)
+    restored = SamsungFoodClient(
+        mock_hass, session, RotatorClient(session, ROTATOR), cache_dir=client._images.directory
+    )
     restored._store = client._store
     await restored.async_restore_cache()
     assert restored._cached_kics_token == "kics-abc"
     assert restored._location_id == "loc-1"
 
 
-@pytest.mark.asyncio
-async def test_expired_cached_token_not_restored(client, mock_hass):
+async def test_expired_cached_token_not_restored(client, mock_hass, session):
     client._cached_kics_token = "stale"
     client._kics_expires_at = time.time() - 10
     await client._async_persist_cache()
 
-    restored = SamsungFoodClient(mock_hass, RotatorClient(ROTATOR), cache_dir=client._images.directory)
+    restored = SamsungFoodClient(
+        mock_hass, session, RotatorClient(session, ROTATOR), cache_dir=client._images.directory
+    )
     restored._store = client._store
     await restored.async_restore_cache()
     assert restored._cached_kics_token is None
@@ -114,16 +114,16 @@ async def test_rate_limit_skips_poll_without_error_and_recovers(caplog):
     async def ensure():
         return None
 
-    api.async_ensure_fresh_token = ensure
     calls = {"n": 0}
 
-    async def run_job(func, *a):
+    async def status():
         calls["n"] += 1
         if calls["n"] <= 2:
             raise RateLimitError("429")
         return {}
 
-    hass.async_add_executor_job = run_job
+    api.async_ensure_fresh_token = ensure
+    api.get_current_device_status = status
     coordinator = FridgeCoordinator(hass, MagicMock(), api)
     coordinator._pat_expires_at = 10**12            # skip the rotator probe
     with caplog.at_level(logging.INFO):

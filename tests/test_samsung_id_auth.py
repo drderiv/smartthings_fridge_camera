@@ -5,7 +5,9 @@ Run with:
 """
 
 import pytest
-import requests_mock as rm
+import re
+
+from tests.fake_aiohttp import aioresponses
 
 from tests.conftest import _HomeAssistant
 
@@ -23,8 +25,8 @@ def hass():
 
 
 @pytest.fixture
-def hub(hass):
-    hub = FamilyHub(token="test-token", device_id="device-123")
+def hub(session):
+    hub = FamilyHub(session, token="test-token", device_id="device-123")
     hub._current_device_status = {
         "samsungce.viewInside": {
             "contents": {"value": [{"fileId": "file-abc"}]}
@@ -51,50 +53,39 @@ UNRELATED_400_BODY = {
 class TestSamsungIdAuthError:
     """HTTP 400 with 'No samsung id available' must raise AuthenticationError."""
 
-    def test_no_samsung_id_400_raises_auth_error(self, hub):
+    async def test_no_samsung_id_400_raises_auth_error(self, hub):
         """HTTP 400 + 'No samsung id available' body raises AuthenticationError."""
-        with rm.Mocker() as m:
-            m.get(rm.ANY, status_code=400, json=NO_SAMSUNG_ID_BODY)
+        with aioresponses() as m:
+            m.get(re.compile(r".*"), status=400, payload=NO_SAMSUNG_ID_BODY)
             with pytest.raises(AuthenticationError, match="No samsung id available"):
-                hub.download_images()
+                await hub.download_images()
 
-    def test_unrelated_400_does_not_raise_auth_error(self, hub):
+    async def test_unrelated_400_does_not_raise_auth_error(self, hub):
         """HTTP 400 with an unrelated body must NOT raise AuthenticationError."""
-        with rm.Mocker() as m:
-            m.get(rm.ANY, status_code=400, json=UNRELATED_400_BODY)
+        with aioresponses() as m:
+            m.get(re.compile(r".*"), status=400, payload=UNRELATED_400_BODY)
             # Must not raise AuthenticationError — warning is logged instead.
             try:
-                hub.download_images()
+                await hub.download_images()
             except AuthenticationError:
                 pytest.fail("AuthenticationError was raised for an unrelated 400 body")
 
-    def test_no_samsung_id_400_malformed_body_does_not_raise(self, hub):
+    async def test_no_samsung_id_400_malformed_body_does_not_raise(self, hub):
         """HTTP 400 with non-JSON body falls through to warning, not exception."""
-        with rm.Mocker() as m:
-            m.get(rm.ANY, status_code=400, text="not json at all")
+        with aioresponses() as m:
+            m.get(re.compile(r".*"), status=400, body="not json at all")
             # Must not raise AuthenticationError — malformed bodies fall through.
             try:
-                hub.download_images()
+                await hub.download_images()
             except AuthenticationError:
                 pytest.fail("AuthenticationError was raised for a non-JSON 400 body")
 
     def test_check_response_direct_no_samsung_id(self, hub):
         """Direct _check_response call: 400 + no-samsung-id body raises."""
-        import requests
-
-        resp = requests.models.Response()
-        resp.status_code = 400
-        resp._content = b'{"error":{"code":"BadRequestError","message":"No samsung id available"}}'
-        resp.encoding = "utf-8"
+        body = b'{"error":{"code":"BadRequestError","message":"No samsung id available"}}'
         with pytest.raises(AuthenticationError, match="No samsung id available"):
-            hub._check_response(resp)
+            hub._check_response(400, body)
 
     def test_check_response_direct_unrelated_400(self, hub):
         """Direct _check_response call: 400 + unrelated body does not raise."""
-        import requests
-
-        resp = requests.models.Response()
-        resp.status_code = 400
-        resp._content = b'{"error":{"code":"BadRequestError","message":"Something else"}}'
-        resp.encoding = "utf-8"
-        hub._check_response(resp)  # no exception
+        hub._check_response(400, b'{"error":{"code":"BadRequestError","message":"Something else"}}')  # no exception

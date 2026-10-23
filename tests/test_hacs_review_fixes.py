@@ -111,7 +111,7 @@ async def test_food_circle_view_properties_and_serving():
         auth_req_obj.get.side_effect = lambda k: auth_req.get(k)
         auth_req_obj.query = auth_req["query"]
         resp = await view.get(auth_req_obj, filename)
-        assert resp.path == img_file
+        assert str(resp._path) == img_file
 
         # 2b. Any non-empty authSig / wrong sig must NOT grant access
         for query in ({"authSig": "anything"}, {"sig": "0" * 16}, {"sig": sig, "authSig": "x"} if False else {"authSig": sig}):
@@ -127,7 +127,7 @@ async def test_food_circle_view_properties_and_serving():
         user_req_obj.get.side_effect = lambda k: user_req.get(k)
         user_req_obj.query = user_req["query"]
         resp_user = await view.get(user_req_obj, filename)
-        assert resp_user.path == img_file
+        assert str(resp_user._path) == img_file
 
         # 4. Nonexistent file with valid sig -> 404
         missing_sig = generate_food_circle_sig(secret, "missing.jpg")
@@ -198,7 +198,8 @@ def test_last_updated_at_sensor_native_value_and_metadata():
     # Metadata assertions
     assert sensor._attr_device_class == "timestamp"
     assert sensor._attr_unique_id == "fridge-device-42_last_updated_at"
-    assert sensor._attr_name == "Last Updated At"
+    assert sensor._attr_translation_key == "last_updated_at"
+    assert sensor._attr_has_entity_name is True
 
     # Value assertion
     val = sensor.native_value

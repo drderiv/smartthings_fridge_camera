@@ -151,7 +151,7 @@ Make sure to select the additional settings as follows and click "Save":
 
 For Samsung Family Hub refrigerators equipped with internal food cameras and AI Food Manager, this integration extracts and displays your active fridge inventory—including **live circular camera crops** cut directly from the fridge shelves, food names, compartments, and expiration dates—as a single clean entity:
 
-* **Entity**: `sensor.samsung_fridge_food_inventory`
+* **Entity**: `sensor.family_hub_food_inventory` (installs that predate v2.0.0 keep their original ID, `sensor.fridge_food_inventory`; use whichever your install shows under **Settings → Devices & Services → Entities**)
 * **State**: Count of active items currently inside the fridge (e.g. `37`)
 * **Attributes**: `total_items`, `last_synced`, and `items` (rich list of active items with circular crop image URLs, expiration dates, and timestamps).
 
@@ -168,7 +168,7 @@ For Samsung Family Hub refrigerators equipped with internal food cameras and AI 
 * **Home Assistant Configuration & Options Flow**:
   - If running Home Assistant on a different device or VM from your rotator server, go to **Settings → Devices & Services → Samsung FamilyHub**, click **Configure**, and enter your rotator server URL (e.g. `http://192.168.1.50:8765`). If the rotator has an `api_key` set in its `config.json` (required whenever it listens on anything other than `127.0.0.1`), enter the same value in **Rotator API key**.
   - You can also adjust the Food Circles sync interval (default: 600s / 10 minutes) or override your Refrigerator Location ID.
-  - The integration automatically detects the tokens and registers `sensor.fridge_food_inventory`. If no token is provided, the sensor is omitted so non-AI fridges remain uncluttered.
+  - The integration automatically detects the tokens and registers `sensor.family_hub_food_inventory`. If no token is provided, the sensor is omitted so non-AI fridges remain uncluttered.
   - **Zero YAML & Zero Routine Polling**: Home Assistant queries the rotator once at startup via `GET /tokens` and caches tokens in memory until their scheduled renewal time (`next_rotation_at`), eliminating continuous polling and network overhead.
 
 ---
@@ -190,15 +190,15 @@ views:
       - type: markdown
         title: 🥗 Smart Fridge Inventory
         content: |
-          {% set last_synced = state_attr('sensor.fridge_food_inventory', 'last_synced') %}
-          **Active Items**: {{ state_attr('sensor.fridge_food_inventory', 'total_items') or 0 }} &nbsp;|&nbsp; **Last Synced**: {{ as_timestamp(last_synced, default=0) | timestamp_custom('%b %d %-I:%M %p', default='Just now') if last_synced else 'Just now' }}
+          {% set last_synced = state_attr('sensor.family_hub_food_inventory', 'last_synced') %}
+          **Active Items**: {{ state_attr('sensor.family_hub_food_inventory', 'total_items') or 0 }} &nbsp;|&nbsp; **Last Synced**: {{ as_timestamp(last_synced, default=0) | timestamp_custom('%b %d %-I:%M %p', default='Just now') if last_synced else 'Just now' }}
 
           ---
 
           | Item | Food Name &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Days Old |
           | :---: | :--- | :---: |
           {% set now_ts = as_timestamp(now()) -%}
-          {% for item in (state_attr('sensor.fridge_food_inventory', 'items') or []) | sort(attribute='added_at', reverse=true) -%}
+          {% for item in (state_attr('sensor.family_hub_food_inventory', 'items') or []) | sort(attribute='added_at', reverse=true) -%}
           {% set raw_ts = item.added_at | int(0) -%}
           {% set sec_ts = (raw_ts / 1000) if raw_ts > 10000000000 else raw_ts -%}
           {% set days_old = ((now_ts - sec_ts) / 86400) | round(0, 'floor') | int if sec_ts > 0 else '—' -%}
@@ -230,7 +230,7 @@ type: markdown
 title: 🍎 Fridge Food Gallery
 content: >
   <div style="display: flex; flex-wrap: wrap; gap: 12px; justify-content: center;">
-  {% for item in state_attr('sensor.fridge_food_inventory', 'items') or [] %}
+  {% for item in state_attr('sensor.family_hub_food_inventory', 'items') or [] %}
     <div style="text-align: center; width: 85px; background: rgba(255,255,255,0.05); padding: 8px; border-radius: 10px;">
       {% if item.image_url %}
         <img src="{{ item.image_url }}" width="60" height="60" style="border-radius: 8px; object-fit: cover;"/>

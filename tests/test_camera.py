@@ -51,9 +51,10 @@ async def test_camera_setup_default_two_cameras(mock_hass):
     assert top_cam.unique_id == "test_fridge_123_family_hub_top"
     assert middle_cam.unique_id == "test_fridge_123_family_hub_middle"
 
-    # Verify names
-    assert top_cam.name == "family_hub_top"
-    assert middle_cam.name == "family_hub_middle"
+    # Names come from translations ("Top" / "Middle") under the device name
+    assert top_cam._attr_translation_key == "top"
+    assert middle_cam._attr_translation_key == "middle"
+    assert top_cam._attr_has_entity_name is True
 
     # Verify camera images
     assert top_cam.camera_image() == b"img0"
@@ -91,5 +92,5 @@ async def test_camera_setup_with_bottom_camera_enabled(mock_hass):
     assert middle_cam.unique_id == "test_fridge_123_family_hub_middle"
     assert bottom_cam.unique_id == "test_fridge_123_family_hub_bottom"
 
-    assert bottom_cam.name == "family_hub_bottom"
+    assert bottom_cam._attr_translation_key == "bottom"
     assert bottom_cam.camera_image() == b"img2"

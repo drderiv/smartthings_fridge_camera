@@ -200,7 +200,7 @@ async def test_link_step_raw_code_advances():
     flow = _make_flow(hass)
     oauth_mock = MagicMock()
     oauth_mock.get_authorization_url.return_value = "https://auth.example.com/go"
-    oauth_mock.exchange_code.return_value = _fake_oauth_creds()
+    oauth_mock.exchange_code = AsyncMock(return_value=_fake_oauth_creds())
     flow._standalone_oauth = oauth_mock
     flow._standalone_auth_url = "https://auth.example.com/go"
 
@@ -223,7 +223,7 @@ async def test_link_step_full_redirect_url_advances():
         MockOAuth.extract_code_from_redirect.return_value = "extracted-code"
         oauth_mock = MagicMock()
         oauth_mock.get_authorization_url.return_value = "https://auth.example.com/go"
-        oauth_mock.exchange_code.return_value = _fake_oauth_creds()
+        oauth_mock.exchange_code = AsyncMock(return_value=_fake_oauth_creds())
         flow._standalone_oauth = oauth_mock
         flow._standalone_auth_url = "https://auth.example.com/go"
 
@@ -286,7 +286,7 @@ async def test_samsung_step_with_credentials_creates_entry_with_iot():
         "custom_components.samsung_familyhub_fridge.config_flow.SamsungAccountAuth"
     ) as MockSamsungAuth:
         mock_auth = MagicMock()
-        mock_auth.login_iot.return_value = _fake_iot_creds()
+        mock_auth.login_iot = AsyncMock(return_value=_fake_iot_creds())
         MockSamsungAuth.return_value = mock_auth
 
         result = await flow.async_step_standalone_oauth_samsung(
@@ -314,7 +314,7 @@ async def test_samsung_step_login_failure_shows_error():
         "custom_components.samsung_familyhub_fridge.config_flow.SamsungAccountAuth"
     ) as MockSamsungAuth:
         mock_auth = MagicMock()
-        mock_auth.login_iot.side_effect = AuthError("bad credentials")
+        mock_auth.login_iot = AsyncMock(side_effect=AuthError("bad credentials"))
         MockSamsungAuth.return_value = mock_auth
 
         result = await flow.async_step_standalone_oauth_samsung(
@@ -344,7 +344,7 @@ async def test_samsung_step_with_signin_client_secret_passes_to_auth():
         "custom_components.samsung_familyhub_fridge.config_flow.SamsungAccountAuth"
     ) as MockSamsungAuth:
         mock_auth = MagicMock()
-        mock_auth.login_iot.return_value = _fake_iot_creds()
+        mock_auth.login_iot = AsyncMock(return_value=_fake_iot_creds())
         MockSamsungAuth.return_value = mock_auth
 
         result = await flow.async_step_standalone_oauth_samsung(
@@ -384,7 +384,7 @@ async def test_samsung_step_without_signin_client_secret_defaults_to_empty():
         "custom_components.samsung_familyhub_fridge.config_flow.SamsungAccountAuth"
     ) as MockSamsungAuth:
         mock_auth = MagicMock()
-        mock_auth.login_iot.return_value = _fake_iot_creds()
+        mock_auth.login_iot = AsyncMock(return_value=_fake_iot_creds())
         MockSamsungAuth.return_value = mock_auth
 
         result = await flow.async_step_standalone_oauth_samsung(

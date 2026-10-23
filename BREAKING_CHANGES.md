@@ -51,7 +51,13 @@ New (non-breaking): last-known KICS/Whisk tokens and the location ID are cached 
 
 ## Integration — structure and behavior
 
-Entity IDs, entity names and unique IDs are **unchanged** (existing dashboards and automations keep working). Changes:
+**Entities now belong to a "Family Hub" device and use translated names.**
+
+- **Existing installs:** entity IDs and unique IDs are unchanged, so dashboards and automations keep working. Friendly names gain the device prefix ("Family Hub Top", "Family Hub Food inventory", ...). The entities are grouped under a new **Family Hub** device.
+- **New installs (and anyone who removes and re-adds the integration):** IDs are `camera.family_hub_top`, `camera.family_hub_middle`, `camera.family_hub_bottom`, `sensor.family_hub_last_updated_at` and `sensor.family_hub_food_inventory`. The two sensors have different IDs from older installs (`sensor.last_updated_at`, `sensor.fridge_food_inventory`).
+- **The README dashboard templates use the new-install IDs.** If your install shows the old IDs, replace `sensor.family_hub_food_inventory` with `sensor.fridge_food_inventory` in them (or rename the entity under Settings → Devices & Services → Entities).
+
+Other changes:
 
 - **Camera images appear within seconds of startup and about a minute after a door closes.** Each poll now reads the fridge status first, downloads images whenever their file IDs changed, and sends the camera-refresh command in the same pass. Before, those steps took turns across polls (two to three poll intervals), which got much slower once polling became 60 s.
 - **Setup waits for the first poll.** A bad token or unreachable SmartThings now makes the entry retry (or ask for re-authentication) instead of loading with nothing working. Failed polls make entities unavailable and are logged once, instead of being retried silently for ten polls.
@@ -65,6 +71,11 @@ Entity IDs, entity names and unique IDs are **unchanged** (existing dashboards a
 - The food inventory sensor's `items` attribute is **no longer stored in the recorder database** (it is still in the live state, so templates and cards are unaffected).
 - The removed "borrowed SmartThings OAuth" mode is no longer offered in the setup menu or translations; existing entries using it show a re-authentication prompt.
 - Internals (only matters if you import them): `DataCoordinator` is now `coordinator.FridgeCoordinator`; `SamsungFoodClient`/`SamsungFoodCoordinator` moved to `food.py`; `FamilyHub` takes `(token, device_id)` with no `hass`; `hass.data[DOMAIN]["hub"]` is gone (use `entry.runtime_data`).
+
+## Integration — HTTP client
+
+- The integration now uses Home Assistant's shared `aiohttp` session for every request (SmartThings, Samsung, the rotator, Samsung Food/KICS and the image downloads) instead of `requests` in worker threads. No configuration changes. Practical effects: food-circle images are downloaded a few at a time, and the integration no longer holds worker threads during slow requests.
+- Internals (only matters if you import them): `FamilyHub(session, token, device_id)`, its methods and `SmartThingsOAuth`/`SamsungAccountAuth`/`refresh_samsung_iot_token` are now coroutines that take an `aiohttp.ClientSession`. `scripts/get_token.py` and `scripts/get_samsung_iot_token.py` were updated accordingly (`scripts/get_samsung_iot_token.py` also had missing imports).
 
 ## Log hygiene
 
