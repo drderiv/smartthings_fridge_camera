@@ -27,14 +27,16 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers.storage import Store
 
-from .api import FamilyHub
+from .api import FamilyHub, rotator_headers
 from .const import (
     AUTH_MODE_OAUTH,
     AUTH_MODE_PAT,
@@ -44,6 +46,7 @@ from .const import (
     CONF_OAUTH_CLIENT_ID,
     CONF_OAUTH_CLIENT_SECRET,
     CONF_OAUTH_REFRESH_TOKEN,
+    CONF_ROTATOR_API_KEY,
     CONF_ROTATOR_URL,
     CONF_SAMSUNG_IOT_AUTH_SERVER,
     CONF_SAMSUNG_IOT_REFRESH_TOKEN,
@@ -80,19 +83,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             or entry.data.get(CONF_ROTATOR_URL)
             or DEFAULT_ROTATOR_URL
         )
+        rotator_hdrs = rotator_headers(
+            entry.options.get(CONF_ROTATOR_API_KEY) or entry.data.get(CONF_ROTATOR_API_KEY)
+        )
         startup_rotator_data: dict[str, Any] = {}
         if rotator_url:
             try:
                 import requests
                 # 1. Try combined /tokens endpoint first
                 r = await hass.async_add_executor_job(
-                    lambda: requests.get(f"{rotator_url.rstrip('/')}/tokens", timeout=2)
+                    lambda: requests.get(f"{rotator_url.rstrip('/')}/tokens", headers=rotator_hdrs, timeout=2)
                 )
                 if r.ok:
                     startup_rotator_data = r.json()
                     fresh_pat = (
                         startup_rotator_data.get("smartthings_pat")
-                        or startup_rotator_data.get("pat")
                         or startup_rotator_data.get("token")
                     )
                     if fresh_pat and fresh_pat.strip():
@@ -101,7 +106,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if not token or not startup_rotator_data:
                     # Fallback to /pat endpoint
                     r_pat = await hass.async_add_executor_job(
-                        lambda: requests.get(f"{rotator_url.rstrip('/')}/pat", timeout=2)
+                        lambda: requests.get(f"{rotator_url.rstrip('/')}/pat", headers=rotator_hdrs, timeout=2)
                     )
                     if r_pat.ok:
                         data = r_pat.json()
@@ -147,9 +152,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as mig_err:
             _LOGGER.debug("Legacy food circles migration note: %s", mig_err)
 
-    # Setup stable signing secret based on entry_id
-    auth_secret = hass.data[DOMAIN].get("auth_secret") or entry.entry_id
-    hass.data[DOMAIN]["auth_secret"] = auth_secret
+    # Random per-installation secret for signing food circle image URLs
+    if not hass.data[DOMAIN].get("auth_secret"):
+        secret_store: Store[dict[str, str]] = Store(hass, 1, f"{DOMAIN}.view_secret")
+        stored = await secret_store.async_load()
+        if not stored or not stored.get("secret"):
+            stored = {"secret": secrets.token_hex(32)}
+            await secret_store.async_save(stored)
+        hass.data[DOMAIN]["auth_secret"] = stored["secret"]
+    auth_secret = hass.data[DOMAIN]["auth_secret"]
 
     # Register authenticated HTTP view for food circles
     if not hass.data[DOMAIN].get("view_registered"):
@@ -213,7 +224,7 @@ async def _build_standalone_oauth_hub(
         creds = await hass.async_add_executor_job(oauth.refresh, refresh_token)
     except Exception as err:  # pylint: disable=broad-except
         raise ConfigEntryNotReady(
-            f"Failed to refresh standalone OAuth token: {err}"
+            f"Failed to refresh standalone OAuth token ({type(err).__name__})"
         ) from err
 
     if creds.refresh_token != refresh_token:

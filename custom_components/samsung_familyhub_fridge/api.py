@@ -16,8 +16,8 @@ from homeassistant.helpers.update_coordinator import (
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 import requests
 
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
 from .const import (
     DOMAIN,
@@ -25,19 +25,15 @@ from .const import (
     DEFAULT_TIMEOUT,
     CONF_FOOD_TOKEN,
     WHISK_FOODLIST_API,
-    FOOD_TOKEN_ENTITY,
-    FOOD_TOKEN_FILE,
     DEFAULT_FOOD_UPDATE_INTERVAL,
     KICS_CLIENT_ID,
     KICS_FOODLIST_ENDPOINT,
     KICS_SA_AUTH_URL,
     CONF_KICS_TOKEN,
-    KICS_TOKEN_ENTITY,
     CONF_LOCATION_ID,
-    KICS_LOCATION_ENTITY,
+    CONF_ROTATOR_API_KEY,
     CONF_ROTATOR_URL,
     DEFAULT_ROTATOR_URL,
-    ROTATOR_URL_ENTITY,
     CONF_FOOD_UPDATE_INTERVAL,
 )
 
@@ -46,8 +42,18 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Helper entity that the PAT rotator writes the new token to.
-_TOKEN_ENTITY = "input_text.smartthings_pat"
+def rotator_headers(api_key: str | None) -> dict[str, str]:
+    """Return the Authorization header for the token rotator, if an API key is set."""
+    return {"Authorization": f"Bearer {api_key.strip()}"} if api_key and api_key.strip() else {}
+
+
+def resolve_rotator_api_key(hass: HomeAssistant) -> str | None:
+    """Return the rotator API key from the integration's options/data (call on the event loop)."""
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        key = entry.options.get(CONF_ROTATOR_API_KEY) or entry.data.get(CONF_ROTATOR_API_KEY)
+        if key and str(key).strip():
+            return str(key).strip()
+    return None
 
 
 class AuthenticationError(Exception):
@@ -71,63 +77,6 @@ class DataCoordinator(DataUpdateCoordinator):
         self._consecutive_download_failures = 0
         self._pat_expires_at = 0.0
 
-        # State change listener to dynamically reload the integration when the PAT changes.
-        # This recovers the integration from ConfigEntryAuthFailed states automatically.
-        @callback
-        def _handle_token_change(event):
-            new_state = event.data.get("new_state")
-            if new_state is None or new_state.state in ("unknown", "unavailable", ""):
-                return
-            new_token = new_state.state.strip()
-            if new_token and new_token != self.api.token:
-                _LOGGER.info(
-                    "Detected changed SmartThings PAT in %s. Updating config entry and reloading integration.",
-                    _TOKEN_ENTITY,
-                )
-                self.api.update_token(new_token)
-
-                entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
-                for entry in entries:
-                    new_data = {**entry.data, "token": new_token}
-                    self._hass.config_entries.async_update_entry(entry, data=new_data)
-                    self._hass.config_entries.async_schedule_reload(entry.entry_id)
-
-        self._unsub_token_listener = async_track_state_change_event(
-            hass,
-            [_TOKEN_ENTITY],
-            _handle_token_change,
-        )
-
-        @callback
-        def _handle_food_token_change(event):
-            new_state = event.data.get("new_state")
-            if new_state is None or new_state.state in ("unknown", "unavailable", ""):
-                return
-            new_tok = new_state.state.strip()
-            if new_tok and getattr(self, "food_coordinator", None) is not None:
-                _LOGGER.info(
-                    "Detected updated Samsung Food token in %s. Refreshing food inventory...",
-                    FOOD_TOKEN_ENTITY,
-                )
-                self._hass.async_create_task(self.food_coordinator.async_request_refresh())
-
-        self._unsub_food_token_listener = async_track_state_change_event(
-            hass,
-            [FOOD_TOKEN_ENTITY, KICS_TOKEN_ENTITY],
-            _handle_food_token_change,
-        )
-
-        def _unsubscribe():
-            if hasattr(self, "_unsub_token_listener") and self._unsub_token_listener is not None:
-                self._unsub_token_listener()
-                self._unsub_token_listener = None
-            if hasattr(self, "_unsub_food_token_listener") and self._unsub_food_token_listener is not None:
-                self._unsub_food_token_listener()
-                self._unsub_food_token_listener = None
-
-        for entry in hass.config_entries.async_entries("samsung_familyhub_fridge"):
-            entry.async_on_unload(_unsubscribe)
-
     def _resolve_rotator_url(self) -> str:
         """Resolve the rotator base URL from integration entries, helpers, or defaults."""
         entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
@@ -135,12 +84,6 @@ class DataCoordinator(DataUpdateCoordinator):
             opt = entry.options.get(CONF_ROTATOR_URL) or entry.data.get(CONF_ROTATOR_URL)
             if opt and str(opt).strip():
                 return str(opt).strip().rstrip("/")
-        try:
-            state = self._hass.states.get(ROTATOR_URL_ENTITY)
-            if state and state.state not in ("unknown", "unavailable", "None", ""):
-                return state.state.strip().rstrip("/")
-        except Exception:
-            pass
         env_url = os.environ.get("PAT_ROTATOR_URL")
         if env_url and env_url.strip():
             return env_url.strip().rstrip("/")
@@ -154,9 +97,10 @@ class DataCoordinator(DataUpdateCoordinator):
         # Query companion rotator REST server only when PAT is missing, uninitialized, or has reached scheduled rotation
         if not self.api.token or not self._pat_expires_at or now >= self._pat_expires_at:
             rotator_base = self._resolve_rotator_url()
+            rotator_hdrs = rotator_headers(resolve_rotator_api_key(self._hass))
             try:
                 r = await self._hass.async_add_executor_job(
-                    lambda: requests.get(f"{rotator_base}/pat", timeout=2)
+                    lambda: requests.get(f"{rotator_base}/pat", headers=rotator_hdrs, timeout=2)
                 )
                 if r.ok:
                     data = r.json()
@@ -176,24 +120,6 @@ class DataCoordinator(DataUpdateCoordinator):
                 # If network fails, retry in 5 minutes
                 self._pat_expires_at = now + 300
 
-        # 2. Fallback to helper entity if input_text.smartthings_pat exists
-        state = self._hass.states.get(_TOKEN_ENTITY)
-        if state and state.state not in ("unknown", "unavailable", ""):
-            live_token = state.state.strip()
-            if live_token and live_token != self.api.token:
-                _LOGGER.debug(
-                    "Picked up refreshed SmartThings PAT from %s", 
-                    _TOKEN_ENTITY
-                )
-                self.api.update_token(live_token)
-                
-                # Permanently update config entry data on disk so restarts sync cleanly
-                entries = self._hass.config_entries.async_entries("samsung_familyhub_fridge")
-                for entry in entries:
-                    if entry.data.get("token") != live_token:
-                        new_data = {**entry.data, "token": live_token}
-                        self._hass.config_entries.async_update_entry(entry, data=new_data)
-                        _LOGGER.info("Updated config entry on disk with new SmartThings PAT")
         # ───────────────────────────────────────────────────────────────────
 
         try:
@@ -267,9 +193,10 @@ class DataCoordinator(DataUpdateCoordinator):
             # Force immediate recovery from rotator
             self._pat_expires_at = 0.0
             rotator_base = self._resolve_rotator_url()
+            rotator_hdrs = rotator_headers(resolve_rotator_api_key(self._hass))
             try:
                 r = await self._hass.async_add_executor_job(
-                    lambda: requests.get(f"{rotator_base}/pat", timeout=2)
+                    lambda: requests.get(f"{rotator_base}/pat", headers=rotator_hdrs, timeout=2)
                 )
                 if r.ok:
                     data = r.json()
@@ -286,18 +213,6 @@ class DataCoordinator(DataUpdateCoordinator):
                         return await self._async_update_data()
             except Exception:
                 pass
-
-            state = self._hass.states.get(_TOKEN_ENTITY)
-            if state is not None and state.state in ("unknown", "unavailable"):
-                _LOGGER.warning(
-                    "SmartThings auth failed, but helper entity %s is not ready yet (%s). "
-                    "Postponing setup...",
-                    _TOKEN_ENTITY,
-                    state.state,
-                )
-                raise ConfigEntryNotReady(
-                    f"Waiting for helper entity {_TOKEN_ENTITY} to restore state."
-                ) from err
 
             raise ConfigEntryAuthFailed(
                 "SmartThings token expired or is invalid. "
@@ -489,9 +404,8 @@ class FamilyHub:
                 pass
         if not response.ok:
             _LOGGER.warning(
-                "SmartThings API request failed: HTTP %s - %s",
+                "SmartThings API request failed: HTTP %s",
                 response.status_code,
-                response.text[:200],
             )
 
     async def authenticate(self) -> bool:
@@ -653,7 +567,7 @@ class FamilyHub:
             if r.ok:
                 loc = r.json().get("locationId")
                 if loc:
-                    _LOGGER.info("Discovered SmartThings locationId for fridge: %s", loc)
+                    _LOGGER.debug("Discovered SmartThings locationId for fridge")
                     self._location_id = loc
                     return loc
         except Exception as err:
@@ -711,8 +625,8 @@ class FamilyHub:
             _LOGGER.error(
                 "Unexpected device status format — missing 'items' key. "
                 "This may indicate an expired token or API error. "
-                "Response: %s",
-                str(self._device_status)[:200],
+                "Response keys: %s",
+                sorted(self._device_status) if isinstance(self._device_status, dict) else type(self._device_status).__name__,
             )
             return
         for element in items:
@@ -778,12 +692,54 @@ class SamsungFoodClient:
         self._location_id = location_id
         self._configured_rotator_url = rotator_url
         self.config_entry = config_entry
+        self._rotator_headers = rotator_headers(
+            (config_entry.options.get(CONF_ROTATOR_API_KEY) or config_entry.data.get(CONF_ROTATOR_API_KEY))
+            if config_entry is not None
+            else None
+        )
         self._cached_inventory: dict | None = None
         self._session: requests.Session | None = None
         self._cached_kics_token: str | None = None
         self._kics_expires_at: float = 0.0
         self._cached_whisk_token: str | None = None
         self._whisk_expires_at: float = 0.0
+        # Last-known tokens/location survive restarts, so a briefly unreachable rotator
+        # doesn't leave the sensor without credentials.
+        self._store: Store[dict[str, Any]] = Store(hass, 1, f"{DOMAIN}.token_cache")
+        self._persisted: dict[str, Any] = {}
+
+    async def async_restore_cache(self) -> None:
+        """Restore unexpired tokens and the location ID saved by a previous run."""
+        data = await self._store.async_load()
+        if not isinstance(data, dict):
+            return
+        self._persisted = dict(data)
+        now = time.time()
+        if data.get("kics_token") and not self._cached_kics_token:
+            expires = float(data.get("kics_expires_at") or 0.0)
+            if not expires or expires > now:
+                self._cached_kics_token = data["kics_token"]
+                self._kics_expires_at = expires
+        if data.get("whisk_token") and not self._cached_whisk_token:
+            expires = float(data.get("whisk_expires_at") or 0.0)
+            if not expires or expires > now:
+                self._cached_whisk_token = data["whisk_token"]
+                self._whisk_expires_at = expires
+        if data.get("location_id") and not self._location_id:
+            self._location_id = data["location_id"]
+
+    async def _async_persist_cache(self) -> None:
+        """Save current tokens/location if they changed (runs on the event loop)."""
+        snapshot = {
+            "kics_token": self._cached_kics_token,
+            "kics_expires_at": self._kics_expires_at,
+            "whisk_token": self._cached_whisk_token,
+            "whisk_expires_at": self._whisk_expires_at,
+            "location_id": self._location_id,
+        }
+        if snapshot != self._persisted:
+            await self._store.async_save(snapshot)
+            self._persisted = snapshot
 
     def _resolve_rotator_base_url(self) -> str:
         """Resolve the base URL of the PAT / KICS rotator microservice."""
@@ -798,14 +754,6 @@ class SamsungFoodClient:
             if opt_url and str(opt_url).strip():
                 return str(opt_url).strip().rstrip("/")
 
-        # Check Home Assistant helper input_text.pat_rotator_url
-        try:
-            state = self.hass.states.get(ROTATOR_URL_ENTITY)
-            if state and state.state not in ("unknown", "unavailable", "None", ""):
-                return state.state.strip().rstrip("/")
-        except Exception:
-            pass
-
         # Check environment variable
         env_url = os.environ.get("PAT_ROTATOR_URL")
         if env_url and env_url.strip():
@@ -817,8 +765,6 @@ class SamsungFoodClient:
         """Attempt to restore cached inventory from disk on startup."""
         try:
             cache_file = self.hass.config.path(".storage/samsung_familyhub/food_circles/inventory.json")
-            if not os.path.exists(cache_file):
-                cache_file = self.hass.config.path("www/samsung_familyhub/food_circles/inventory.json")
             if os.path.exists(cache_file):
                 with open(cache_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -834,20 +780,19 @@ class SamsungFoodClient:
             self._session = requests.Session()
         return self._session
 
-    def _get_file_token_sync(self) -> str | None:
-        """Synchronously check candidate token files on disk or local rotator in executor thread."""
+    def _get_rotator_token_sync(self) -> str | None:
+        """Fetch the KICS/Food token from the rotator (runs in an executor thread)."""
         now = time.time()
         if self._cached_kics_token and (not self._kics_expires_at or now < self._kics_expires_at):
             return self._cached_kics_token
 
-        # 1. Try PAT rotator REST server first
         rotator_base = self._resolve_rotator_base_url()
         for endpoint in (
             f"{rotator_base}/kics_token",
             f"{rotator_base}/food_token",
         ):
             try:
-                res = requests.get(endpoint, timeout=2)
+                res = requests.get(endpoint, headers=self._rotator_headers, timeout=2)
                 if res.ok:
                     data = res.json()
                     tok = data.get("token")
@@ -860,43 +805,6 @@ class SamsungFoodClient:
             except Exception:
                 pass
 
-        # 2. Check candidate token files on disk
-        candidate_paths = [
-            self.hass.config.path(FOOD_TOKEN_FILE),
-            self.hass.config.path("kics_food_token.txt"),
-            self.hass.config.path("active_bearer_token.txt"),
-            self.hass.config.path(f"custom_components/samsung_familyhub_fridge/{FOOD_TOKEN_FILE}"),
-            f"/config/{FOOD_TOKEN_FILE}",
-            f"/config/kics_food_token.txt",
-            f"/config/active_bearer_token.txt",
-            f"/config/custom_components/samsung_familyhub_fridge/{FOOD_TOKEN_FILE}",
-            f"/tmp/{FOOD_TOKEN_FILE}",
-            f"/tmp/kics_food_token.txt",
-            f"/tmp/active_bearer_token.txt",
-            os.path.join(os.path.dirname(__file__), FOOD_TOKEN_FILE),
-            os.path.join(os.path.dirname(__file__), "kics_food_token.txt"),
-            os.path.join(os.path.dirname(__file__), "active_bearer_token.txt"),
-            os.path.join(os.path.dirname(__file__), f"../../scripts/{FOOD_TOKEN_FILE}"),
-            os.path.join(os.path.dirname(__file__), "../../scripts/kics_food_token.txt"),
-            os.path.join(os.path.dirname(__file__), "../../scripts/active_bearer_token.txt"),
-            os.path.join(os.path.dirname(__file__), f"../{FOOD_TOKEN_FILE}"),
-            os.path.expanduser("~/smartthings_pat_rotator/kics_food_token.txt"),
-            os.path.expanduser("~/smartthings_pat_rotator/active_bearer_token.txt"),
-            os.path.expanduser("~/smartthings_pat_rotator/samsung_food_token.txt"),
-        ]
-        for p in candidate_paths:
-            try:
-                if os.path.exists(p):
-                    with open(p, "r", encoding="utf-8") as f:
-                        tok = f.read().strip()
-                        if tok:
-                            _LOGGER.info("SamsungFoodClient: Loaded token from %s", p)
-                            self._cached_kics_token = tok
-                            self._kics_expires_at = now + (22 * 3600)
-                            return tok
-            except Exception as err:
-                _LOGGER.debug("Could not read candidate token file %s: %s", p, err)
-
         return None
 
     async def async_get_token(self) -> str | None:
@@ -908,14 +816,7 @@ class SamsungFoodClient:
         if self._cached_kics_token and (not self._kics_expires_at or now < self._kics_expires_at):
             return self._cached_kics_token
 
-        # Check helper entities (KICS token helper prioritized, then Samsung Food helper)
-        for entity_id in (KICS_TOKEN_ENTITY, FOOD_TOKEN_ENTITY):
-            state = self.hass.states.get(entity_id)
-            if state and state.state not in ("unknown", "unavailable", ""):
-                return state.state.strip()
-
-        # Check file locations in executor thread
-        tok = await self.hass.async_add_executor_job(self._get_file_token_sync)
+        tok = await self.hass.async_add_executor_job(self._get_rotator_token_sync)
         if tok:
             self._cached_kics_token = tok
             if not self._kics_expires_at or now >= self._kics_expires_at:
@@ -936,7 +837,7 @@ class SamsungFoodClient:
         else:
             rotator_base = self._resolve_rotator_base_url()
             try:
-                r = session.get(f"{rotator_base}/food_token", timeout=2)
+                r = session.get(f"{rotator_base}/food_token", headers=self._rotator_headers, timeout=2)
                 if r.ok:
                     data = r.json()
                     tok = data.get("token")
@@ -947,31 +848,6 @@ class SamsungFoodClient:
                         self._whisk_expires_at = float(next_rot) if next_rot else (now + (27 * 86400))
             except Exception:
                 pass
-
-        if not whisk_token:
-            for p in [
-                self.hass.config.path(FOOD_TOKEN_FILE),
-                f"/config/{FOOD_TOKEN_FILE}",
-                f"/tmp/{FOOD_TOKEN_FILE}",
-                os.path.join(os.path.dirname(__file__), FOOD_TOKEN_FILE),
-                os.path.expanduser("~/smartthings_pat_rotator/samsung_food_token.txt"),
-            ]:
-                if os.path.exists(p):
-                    try:
-                        with open(p, "r", encoding="utf-8") as f:
-                            tok = f.read().strip()
-                            if tok and len(tok) > 30 and not tok.startswith("food@"):
-                                whisk_token = tok
-                                break
-                    except Exception:
-                        pass
-
-        if not whisk_token:
-            state = self.hass.states.get(FOOD_TOKEN_ENTITY)
-            if state and state.state not in ("unknown", "unavailable", ""):
-                candidate = state.state.strip()
-                if len(candidate) > 35:
-                    whisk_token = candidate
 
         if not whisk_token or len(whisk_token) < 35:
             return {}
@@ -1001,127 +877,39 @@ class SamsungFoodClient:
             _LOGGER.debug("Could not build Whisk stock photo map: %s", err)
         return stock_map
 
-    def _save_and_return_loc(self, loc: str, helper_state: Any = None) -> str:
-        """Store location ID in memory and auto-populate the helper entity if empty."""
-        clean_loc = loc.strip()
-        self._location_id = clean_loc
-
-        if helper_state is not None and helper_state.state in ("unknown", "unavailable", "None", ""):
-            try:
-                self.hass.loop.call_soon_threadsafe(
-                    self.hass.async_create_task,
-                    self.hass.services.async_call(
-                        "input_text",
-                        "set_value",
-                        {"entity_id": KICS_LOCATION_ENTITY, "value": clean_loc},
-                    )
-                )
-                _LOGGER.info("SamsungFoodClient: Auto-populated %s with Location ID: %s", KICS_LOCATION_ENTITY, clean_loc)
-            except Exception as err:
-                _LOGGER.debug("Could not auto-populate %s: %s", KICS_LOCATION_ENTITY, err)
-        return clean_loc
-
     def _get_location_id_sync(self) -> str:
-        """Synchronously resolve location ID for KICS EPA requests."""
+        """Resolve the fridge's SmartThings location ID (runs in an executor thread).
+
+        Order: configured override / cached value, the SmartThings device record,
+        then the rotator's /location_id endpoint.
+        """
         if self._location_id and self._location_id.strip():
             return self._location_id.strip()
 
-        # 1. Check dedicated Home Assistant helper entity (input_text.kics_location_id)
-        state = self.hass.states.get(KICS_LOCATION_ENTITY)
-        if state and state.state not in ("unknown", "unavailable", "None", ""):
-            self._location_id = state.state.strip()
-            return self._location_id
-
-        # 2. Check location_id attribute on REST sensors
-        for ent in ("sensor.kics_food_token", "sensor.samsung_food_token"):
-            st = self.hass.states.get(ent)
-            if st and st.attributes.get("location_id"):
-                loc = str(st.attributes["location_id"]).strip()
-                if loc and not loc.startswith("YOUR_"):
-                    return self._save_and_return_loc(loc, state)
-
-        # 3. Check rotator microservice REST server
-        rotator_base = self._resolve_rotator_base_url()
-        for ep in (
-            f"{rotator_base}/location_id",
-            f"{rotator_base}/kics_token",
-            f"{rotator_base}/tokens",
-        ):
+        hub = self.hass.data.get(DOMAIN, {}).get("hub")
+        if hub is not None:
             try:
-                r = requests.get(ep, timeout=2)
-                if r.ok:
-                    loc = r.json().get("location_id")
-                    if loc and str(loc).strip() and not str(loc).startswith("YOUR_"):
-                        _LOGGER.info("SamsungFoodClient: Loaded Location ID from rotator server (%s): %s", ep, loc)
-                        return self._save_and_return_loc(str(loc), state)
-            except Exception:
-                pass
-
-        # 4. From FamilyHub instance via SmartThings API
-        try:
-            hub = self.hass.data.get(DOMAIN, {}).get("hub")
-            if hub and hasattr(hub, "get_location_id"):
                 loc = hub.get_location_id()
-                if loc:
-                    return self._save_and_return_loc(loc, state)
-        except Exception:
-            pass
-
-        # 5. Try discovering from devices list using active PAT
-        pat = None
-        pat_state = self.hass.states.get(_TOKEN_ENTITY)
-        if pat_state and pat_state.state not in ("unknown", "unavailable", "None", ""):
-            pat = pat_state.state.strip()
-        if not pat:
-            hub = self.hass.data.get(DOMAIN, {}).get("hub")
-            if hub and hasattr(hub, "token") and hub.token:
-                pat = hub.token
-        if not pat:
-            for ep in (f"{rotator_base}/pat",):
-                try:
-                    r = requests.get(ep, timeout=2)
-                    if r.ok:
-                        pat = r.json().get("token")
-                        if pat:
-                            break
-                except Exception:
-                    pass
-        if pat:
-            try:
-                res = requests.get(
-                    "https://api.smartthings.com/v1/devices",
-                    headers={"Authorization": f"Bearer {pat}"},
-                    timeout=10,
-                )
-                if res.ok:
-                    for dev in res.json().get("items", []):
-                        dev_type = dev.get("deviceTypeName", "").lower()
-                        name = dev.get("name", "").lower()
-                        label = dev.get("label", "").lower()
-                        if any(k in dev_type or k in name or k in label for k in ["fridge", "refrigerator", "familyhub", "hub"]):
-                            loc = dev.get("locationId")
-                            if loc:
-                                _LOGGER.info("SamsungFoodClient: Auto-discovered Location ID from SmartThings devices: %s", loc)
-                                return self._save_and_return_loc(loc, state)
             except Exception as err:
-                _LOGGER.debug("Could not discover locationId via PAT: %s", err)
+                _LOGGER.debug("Could not read locationId from SmartThings: %s", err)
+            else:
+                if loc:
+                    self._location_id = loc.strip()
+                    return self._location_id
 
-        # 6. Check candidate config.json files on disk
-        for p in [
-            self.hass.config.path("config.json"),
-            "/config/config.json",
-            os.path.expanduser("~/smartthings_pat_rotator/config.json"),
-            os.path.join(os.path.dirname(__file__), "../../config.json"),
-        ]:
-            if os.path.exists(p):
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        cfg = json.load(f)
-                        loc = cfg.get("location_id")
-                        if loc and str(loc).strip() and not str(loc).startswith("YOUR_"):
-                            return self._save_and_return_loc(str(loc), state)
-                except Exception:
-                    pass
+        try:
+            r = requests.get(
+                f"{self._resolve_rotator_base_url()}/location_id",
+                headers=self._rotator_headers,
+                timeout=2,
+            )
+            if r.ok:
+                loc = r.json().get("location_id")
+                if loc and str(loc).strip() and not str(loc).startswith("YOUR_"):
+                    self._location_id = str(loc).strip()
+                    return self._location_id
+        except (requests.RequestException, ValueError) as err:
+            _LOGGER.debug("Could not read location_id from rotator: %s", err)
 
         return ""
 
@@ -1138,8 +926,8 @@ class SamsungFoodClient:
         location_id = self._get_location_id_sync()
         if not location_id:
             raise UpdateFailed(
-                "KICS EPA food circles requires a location_id. Please paste your fridge's Location ID "
-                "into helper input_text.kics_location_id in Home Assistant."
+                "KICS EPA food circles requires a location_id. Set your fridge's Location ID under "
+                "Settings → Devices & Services → Samsung FamilyHub → Configure."
             )
 
         kics_headers = {
@@ -1236,7 +1024,7 @@ class SamsungFoodClient:
                     except Exception as prune_err:
                         _LOGGER.debug("Error pruning stale food circles: %s", prune_err)
 
-                    _LOGGER.info("SamsungFoodClient: Retrieved %d live food circle items from KICS EPA (Location: %s).", len(active_items), location_id)
+                    _LOGGER.info("SamsungFoodClient: Retrieved %d live food circle items from KICS EPA.", len(active_items))
                     result = {
                         "total_items": len(active_items),
                         "last_synced": datetime.now(timezone.utc).isoformat(),
@@ -1374,7 +1162,10 @@ class SamsungFoodClient:
                 return self._cached_inventory
             return {"total_items": 0, "last_synced": None, "items": []}
 
-        return await self.hass.async_add_executor_job(self._fetch_food_items_sync, token)
+        try:
+            return await self.hass.async_add_executor_job(self._fetch_food_items_sync, token)
+        finally:
+            await self._async_persist_cache()
 
 
 class SamsungFoodCoordinator(DataUpdateCoordinator):

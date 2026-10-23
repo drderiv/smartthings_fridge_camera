@@ -386,6 +386,20 @@ ha_helpers_update_coordinator = _make_module(
     CoordinatorEntity=_CoordinatorEntity,
     UpdateFailed=Exception,
 )
+class _Store:
+    """Minimal in-memory stand-in for homeassistant.helpers.storage.Store."""
+
+    def __init__(self, hass, version, key, **kwargs):
+        self._data = None
+
+    async def async_load(self):
+        return self._data
+
+    async def async_save(self, data):
+        self._data = data
+
+
+ha_helpers_storage = _make_module("homeassistant.helpers.storage", Store=_Store)
 ha_helpers_entity_platform = _make_module(
     "homeassistant.helpers.entity_platform",
     AddEntitiesCallback=MagicMock,
@@ -515,6 +529,7 @@ _modules = {
     "homeassistant.data_entry_flow": ha_data_entry_flow,
     "homeassistant.helpers": ha_helpers,
     "homeassistant.helpers.update_coordinator": ha_helpers_update_coordinator,
+    "homeassistant.helpers.storage": ha_helpers_storage,
     "homeassistant.helpers.entity_platform": ha_helpers_entity_platform,
     "homeassistant.helpers.dispatcher": ha_helpers_dispatcher,
     "homeassistant.helpers.typing": ha_helpers_typing,

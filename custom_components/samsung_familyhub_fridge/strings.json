@@ -79,6 +79,7 @@
         "description": "Configure companion token rotator endpoints and Food Circles settings.",
         "data": {
           "rotator_url": "PAT / KICS Rotator URL",
+          "rotator_api_key": "Rotator API key (if the rotator requires one)",
           "location_id": "Fridge Location ID (optional override)",
           "food_update_interval": "Food Circles sync interval in seconds"
         }

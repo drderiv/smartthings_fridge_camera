@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 
@@ -20,7 +21,11 @@ class FamilyHubFoodCircleView(HomeAssistantView):
 
     url = "/api/samsung_familyhub/food_circles/{filename}"
     name = "api:samsung_familyhub:food_circles"
-    requires_auth = False  # Custom auth verification: user session, compact HMAC signature, or signed token
+    # Dashboard Markdown cards render <img src> without HA credentials, so authentication is
+    # done here: a logged-in user, or an HMAC signature of the filename.
+    requires_auth = False
+
+    _FILENAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\.jpg")
 
     def __init__(self, cache_dir: str, secret: str = "") -> None:
         """Initialize the view."""
@@ -29,21 +34,19 @@ class FamilyHubFoodCircleView(HomeAssistantView):
 
     async def get(self, request: web.Request, filename: str) -> web.Response:
         """Serve a food circle thumbnail."""
-        # 1. Prevent directory traversal attacks
-        if "/" in filename or "\\" in filename or ".." in filename:
+        # 1. Allow-list the filename (blocks traversal and anything but cached crops)
+        if not self._FILENAME_RE.fullmatch(filename):
             return web.Response(status=400, text="Invalid filename")
 
-        # 2. Access control:
-        # - Logged-in Home Assistant user session (Lovelace web / companion app)
-        # - Valid compact HMAC signature matching the requested filename
-        # - Home Assistant signed path token (authSig) for backwards compatibility
+        # 2. Access control: logged-in Home Assistant user, or a valid HMAC signature
+        # of the requested filename.
         user = request.get("hass_user")
         sig = request.query.get("sig")
-        auth_sig = request.query.get("authSig")
 
         is_valid_sig = bool(
-            (sig and self.secret and hmac.compare_digest(sig, generate_food_circle_sig(self.secret, filename)))
-            or auth_sig
+            sig
+            and self.secret
+            and hmac.compare_digest(sig, generate_food_circle_sig(self.secret, filename))
         )
         if not user and not is_valid_sig:
             return web.Response(status=401, text="Unauthorized")

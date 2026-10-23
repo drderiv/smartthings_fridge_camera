@@ -28,8 +28,6 @@ CONF_SAMSUNG_SIGNIN_CLIENT_SECRET = "samsung_signin_client_secret"
 # Samsung Food (Whisk) AI Food Manager constants
 CONF_FOOD_TOKEN = "food_token"
 WHISK_FOODLIST_API = "https://api.whisk.com/foodlist/v2"
-FOOD_TOKEN_ENTITY = "input_text.samsung_food_token"
-FOOD_TOKEN_FILE = "samsung_food_token.txt"
 DEFAULT_FOOD_UPDATE_INTERVAL = 600  # 10 minutes
 
 # Samsung Family Hub Live Food Circles (KICS EPA) constants
@@ -37,14 +35,12 @@ KICS_CLIENT_ID = "qumapq783u"
 KICS_FOODLIST_ENDPOINT = "https://kics-epa.samsungepa.com/api/foodlist"
 KICS_SA_AUTH_URL = "us-auth2.samsungosp.com"
 CONF_KICS_TOKEN = "kics_food_token"
-KICS_TOKEN_ENTITY = "input_text.kics_food_token"
 CONF_LOCATION_ID = "location_id"
-KICS_LOCATION_ENTITY = "input_text.kics_location_id"
 
 # Rotator microservice & options constants
 CONF_ROTATOR_URL = "rotator_url"
+CONF_ROTATOR_API_KEY = "rotator_api_key"
 DEFAULT_ROTATOR_URL = "http://127.0.0.1:8765"
-ROTATOR_URL_ENTITY = "input_text.pat_rotator_url"
 CONF_FOOD_UPDATE_INTERVAL = "food_update_interval"
 CONF_ENABLE_BOTTOM_CAMERA = "enable_bottom_camera"
 DEFAULT_ENABLE_BOTTOM_CAMERA = False

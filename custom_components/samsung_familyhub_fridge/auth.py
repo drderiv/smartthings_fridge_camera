@@ -400,7 +400,7 @@ def get_samsung_iot_token(
     )
     if resp.status_code not in (200, 302):
         raise AuthError(
-            f"IoT authorize failed: HTTP {resp.status_code} {resp.text[:200]}"
+            f"IoT authorize failed: HTTP {resp.status_code}"
         )
 
     # The code might be in the response body (JSON) or in a redirect Location
@@ -415,7 +415,7 @@ def get_samsung_iot_token(
         auth_code = body.get("code") or body.get("auth_code")
     if not auth_code:
         raise AuthError(
-            f"IoT authorize did not return a code: {resp.text[:300]}"
+            "IoT authorize did not return a code"
         )
 
     _LOGGER.debug("Got IoT authorization code")
@@ -436,13 +436,14 @@ def get_samsung_iot_token(
     )
     if resp.status_code != 200:
         raise AuthError(
-            f"IoT token exchange failed: HTTP {resp.status_code} {resp.text[:200]}"
+            f"IoT token exchange failed: HTTP {resp.status_code}"
         )
     body = resp.json()
     access = body.get("access_token")
     refresh = body.get("refresh_token")
     if not access or not refresh:
-        raise AuthError(f"IoT token response missing tokens: {body}")
+        missing = [k for k, v in (("access_token", access), ("refresh_token", refresh)) if not v]
+        raise AuthError(f"IoT token response missing: {', '.join(missing)}")
 
     _LOGGER.info("Samsung IoT token obtained successfully")
     return SamsungIoTCredentials(

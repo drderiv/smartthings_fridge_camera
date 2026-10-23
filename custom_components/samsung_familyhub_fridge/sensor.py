@@ -70,7 +70,7 @@ async def async_setup_entry(
 
     if startup_data:
         import time
-        kics_tok = startup_data.get("kics_token") or startup_data.get("kics_food_token")
+        kics_tok = startup_data.get("kics_token")
         if kics_tok and str(kics_tok).strip():
             food_client._cached_kics_token = str(kics_tok).strip()
             kics_next = startup_data.get("kics_next_rotation_at")
@@ -78,7 +78,7 @@ async def async_setup_entry(
                 food_client._kics_expires_at = float(kics_next)
             else:
                 food_client._kics_expires_at = time.time() + (22 * 3600)
-        whisk_tok = startup_data.get("samsung_food_token") or startup_data.get("food_token")
+        whisk_tok = startup_data.get("samsung_food_token")
         if whisk_tok and str(whisk_tok).strip():
             food_client._cached_whisk_token = str(whisk_tok).strip()
             whisk_next = startup_data.get("food_next_rotation_at")
@@ -90,6 +90,7 @@ async def async_setup_entry(
         if loc and str(loc).strip() and not str(loc).startswith("YOUR_") and not food_client._location_id:
             food_client._location_id = str(loc).strip()
 
+    await food_client.async_restore_cache()
     if await food_client.async_has_token():
         _LOGGER.info("Samsung Food token detected. Initializing AI Food Manager inventory sensor.")
         food_coordinator = SamsungFoodCoordinator(

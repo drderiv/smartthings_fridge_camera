@@ -113,6 +113,14 @@ async def test_food_circle_view_properties_and_serving():
         resp = await view.get(auth_req_obj, filename)
         assert resp.path == img_file
 
+        # 2b. Any non-empty authSig / wrong sig must NOT grant access
+        for query in ({"authSig": "anything"}, {"sig": "0" * 16}, {"sig": sig, "authSig": "x"} if False else {"authSig": sig}):
+            bogus_req = {"hass_user": None, "query": query}
+            bogus_req_obj = MagicMock()
+            bogus_req_obj.get.side_effect = lambda k, r=bogus_req: r.get(k)
+            bogus_req_obj.query = query
+            assert (await view.get(bogus_req_obj, filename)).status == 401
+
         # 3. Valid request with logged-in HA user -> 200 FileResponse
         user_req = {"hass_user": MagicMock(), "query": {}}
         user_req_obj = MagicMock()

@@ -27,6 +27,7 @@ from .const import (
     CONF_OAUTH_CLIENT_SECRET,
     CONF_OAUTH_REFRESH_TOKEN,
     CONF_ENABLE_BOTTOM_CAMERA,
+    CONF_ROTATOR_API_KEY,
     CONF_ROTATOR_URL,
     CONF_SAMSUNG_IOT_AUTH_SERVER,
     CONF_SAMSUNG_IOT_REFRESH_TOKEN,
@@ -460,6 +461,7 @@ class SamsungFamilyHubOptionsFlow(config_entries.OptionsFlow):
             or data.get(CONF_ROTATOR_URL)
             or DEFAULT_ROTATOR_URL
         )
+        rotator_api_key = options.get(CONF_ROTATOR_API_KEY) or data.get(CONF_ROTATOR_API_KEY) or ""
         location_id = (
             options.get(CONF_LOCATION_ID)
             or data.get(CONF_LOCATION_ID)
@@ -479,6 +481,7 @@ class SamsungFamilyHubOptionsFlow(config_entries.OptionsFlow):
         schema = vol.Schema(
             {
                 vol.Optional(CONF_ROTATOR_URL, default=rotator_url): str,
+                vol.Optional(CONF_ROTATOR_API_KEY, default=rotator_api_key): str,
                 vol.Optional(CONF_LOCATION_ID, default=location_id): str,
                 vol.Optional(CONF_FOOD_UPDATE_INTERVAL, default=food_interval): int,
                 vol.Optional(CONF_ENABLE_BOTTOM_CAMERA, default=enable_bottom): bool,
