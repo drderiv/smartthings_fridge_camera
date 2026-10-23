@@ -8,31 +8,33 @@ import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import AuthenticationError, FamilyHub, RateLimitError
-from .auth import AuthError, SamsungAccountAuth, SmartThingsOAuth
-from .auth import SAMSUNG_LOGIN_CLIENT_ID
+from .auth import (
+    DEFAULT_REDIRECT_URI,
+    SAMSUNG_LOGIN_CLIENT_ID,
+    AuthError,
+    OAuthCredentials,
+    SamsungAccountAuth,
+    SmartThingsOAuth,
+)
 from .const import (
-    AUTH_MODE_OAUTH,
     AUTH_MODE_PAT,
     AUTH_MODE_STANDALONE_OAUTH,
     CONF_AUTH_MODE,
     CONF_DEVICE_ID,
+    CONF_ENABLE_BOTTOM_CAMERA,
     CONF_FOOD_UPDATE_INTERVAL,
     CONF_LOCATION_ID,
     CONF_OAUTH_CLIENT_ID,
     CONF_OAUTH_CLIENT_SECRET,
     CONF_OAUTH_REFRESH_TOKEN,
-    CONF_ENABLE_BOTTOM_CAMERA,
     CONF_POLL_INTERVAL,
-    DEFAULT_POLL_INTERVAL,
-    MAX_POLL_INTERVAL,
-    MIN_POLL_INTERVAL,
     CONF_ROTATOR_API_KEY,
     CONF_ROTATOR_URL,
     CONF_SAMSUNG_IOT_AUTH_SERVER,
@@ -41,12 +43,15 @@ from .const import (
     CONF_TOKEN,
     DEFAULT_ENABLE_BOTTOM_CAMERA,
     DEFAULT_FOOD_UPDATE_INTERVAL,
+    DEFAULT_POLL_INTERVAL,
     DEFAULT_ROTATOR_URL,
     DOMAIN,
+    MAX_POLL_INTERVAL,
+    MIN_POLL_INTERVAL,
 )
+from .rotator import entry_value
 
 _LOGGER = logging.getLogger(__name__)
-
 
 STEP_PAT_DATA_SCHEMA = vol.Schema(
     {
@@ -54,12 +59,27 @@ STEP_PAT_DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_DEVICE_ID): str,
     }
 )
+CREDENTIALS_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_OAUTH_CLIENT_ID): str,
+        vol.Required(CONF_OAUTH_CLIENT_SECRET): str,
+    }
+)
+CODE_SCHEMA = vol.Schema({"redirect_url_or_code": str})
+FIELD_REDIRECT = "redirect_url_or_code"
+
+
+class CannotConnect(HomeAssistantError):
+    """Error to indicate we cannot connect."""
+
+
+class InvalidAuth(HomeAssistantError):
+    """Error to indicate there is invalid auth."""
 
 
 async def _validate_pat(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
     """Validate a Personal Access Token and resolve the device ID."""
     hub = FamilyHub(async_get_clientsession(hass), data[CONF_TOKEN], data.get(CONF_DEVICE_ID))
-
     try:
         status = await hub.get_all_device_status()
     except AuthenticationError as err:
@@ -67,11 +87,44 @@ async def _validate_pat(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, 
     except (RateLimitError, aiohttp.ClientError, TimeoutError, ValueError) as err:
         raise CannotConnect from err
     hub.set_device_status(status)
-
     if not data.get(CONF_DEVICE_ID):
         data[CONF_DEVICE_ID] = hub.device_id
-
     return data
+
+
+def _redirect_uri(hass: HomeAssistant) -> str:
+    """Home Assistant's OAuth redirect URI, or the public my.home-assistant.io one."""
+    try:
+        return config_entry_oauth2_flow.async_get_redirect_uri(hass)
+    except HomeAssistantError:
+        return DEFAULT_REDIRECT_URI
+
+
+def _credentials_input(user_input: dict[str, Any]) -> tuple[str, str, dict[str, str]]:
+    """(client_id, client_secret, errors) from the credentials form."""
+    client_id = user_input.get(CONF_OAUTH_CLIENT_ID, "").strip()
+    client_secret = user_input.get(CONF_OAUTH_CLIENT_SECRET, "").strip()
+    errors: dict[str, str] = {}
+    if not client_id:
+        errors[CONF_OAUTH_CLIENT_ID] = "required"
+    elif not client_secret:
+        errors[CONF_OAUTH_CLIENT_SECRET] = "required"
+    return client_id, client_secret, errors
+
+
+async def _exchange_code(
+    hass: HomeAssistant, oauth: SmartThingsOAuth, raw: str
+) -> tuple[OAuthCredentials | None, str | None]:
+    """Exchange a pasted redirect URL or code for tokens: (credentials, error key)."""
+    try:
+        code = SmartThingsOAuth.extract_code_from_redirect(raw) if raw.startswith("http") else raw
+        credentials = await oauth.exchange_code(async_get_clientsession(hass), code)
+    except ValueError:
+        return None, "invalid_redirect_url"
+    except (aiohttp.ClientError, TimeoutError, KeyError) as err:
+        _LOGGER.warning("SmartThings code exchange failed: %s", type(err).__name__)
+        return None, "code_exchange_failed"
+    return credentials, None
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -79,126 +132,92 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 2
 
+    def __init__(self) -> None:
+        self._standalone_oauth: SmartThingsOAuth | None = None
+        self._standalone_auth_url = ""
+        self._standalone_client_id = ""
+        self._standalone_client_secret = ""
+        self._standalone_refresh_token = ""
+        self._reauth_standalone_oauth: SmartThingsOAuth | None = None
+        self._reauth_standalone_auth_url = ""
+        self._reauth_standalone_client_id = ""
+        self._reauth_standalone_client_secret = ""
+
     @staticmethod
     @callback
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> config_entries.OptionsFlow:
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
         """Create the options flow handler."""
-        return SamsungFamilyHubOptionsFlow(config_entry)
+        return SamsungFamilyHubOptionsFlow()
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """First step — offer standalone OAuth or PAT."""
-        return self.async_show_menu(
-            step_id="user",
-            menu_options=["standalone_oauth", "pat"],
-        )
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """First step: choose Standalone OAuth or a Personal Access Token."""
+        return self.async_show_menu(step_id="user", menu_options=["standalone_oauth", "pat"])
 
     # ---------------- Standalone OAuth path ----------------
 
-    async def async_step_standalone_oauth(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Bridge: HA resolves menu option 'standalone_oauth' to this method."""
+    async def async_step_standalone_oauth(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Menu option 'standalone_oauth' resolves to this step."""
         return await self.async_step_standalone_oauth_credentials(user_input)
 
     async def async_step_standalone_oauth_credentials(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Step 1 of standalone OAuth: collect client_id and client_secret."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            client_id = user_input.get(CONF_OAUTH_CLIENT_ID, "").strip()
-            client_secret = user_input.get(CONF_OAUTH_CLIENT_SECRET, "").strip()
-            if not client_id:
-                errors[CONF_OAUTH_CLIENT_ID] = "required"
-            elif not client_secret:
-                errors[CONF_OAUTH_CLIENT_SECRET] = "required"
-            else:
-                try:
-                    redirect_uri = config_entry_oauth2_flow.async_get_redirect_uri(self.hass)
-                except Exception:
-                    from .auth import DEFAULT_REDIRECT_URI
-                    redirect_uri = DEFAULT_REDIRECT_URI
-
-                oauth = SmartThingsOAuth(
+            client_id, client_secret, errors = _credentials_input(user_input)
+            if not errors:
+                self._standalone_oauth = SmartThingsOAuth(
                     client_id=client_id,
                     client_secret=client_secret,
-                    redirect_uri=redirect_uri,
+                    redirect_uri=_redirect_uri(self.hass),
                 )
-                self._standalone_oauth = oauth
                 self._standalone_client_id = client_id
                 self._standalone_client_secret = client_secret
-                self._standalone_redirect_uri = redirect_uri
-                self._standalone_auth_url = oauth.get_authorization_url()
+                self._standalone_auth_url = self._standalone_oauth.get_authorization_url()
                 return await self.async_step_standalone_oauth_link()
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_OAUTH_CLIENT_ID): str,
-                vol.Required(CONF_OAUTH_CLIENT_SECRET): str,
-            }
-        )
         return self.async_show_form(
-            step_id="standalone_oauth_credentials",
-            data_schema=schema,
-            errors=errors,
+            step_id="standalone_oauth_credentials", data_schema=CREDENTIALS_SCHEMA, errors=errors
         )
 
     async def async_step_standalone_oauth_link(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> FlowResult:
-        """Step 2 of standalone OAuth: display auth URL, collect redirect or code."""
-        errors: dict[str, str] = {}
-        oauth: SmartThingsOAuth | None = getattr(self, "_standalone_oauth", None)
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 2 of standalone OAuth: show the authorization URL, collect the redirect or code."""
+        oauth = self._standalone_oauth
         if oauth is None:
             return await self.async_step_standalone_oauth_credentials()
+        auth_url = self._standalone_auth_url or oauth.get_authorization_url()
 
-        auth_url: str = getattr(self, "_standalone_auth_url", "") or oauth.get_authorization_url()
-
+        errors: dict[str, str] = {}
         if user_input is not None:
-            raw = user_input.get("redirect_url_or_code", "").strip()
+            raw = user_input.get(FIELD_REDIRECT, "").strip()
             if not raw:
-                errors["redirect_url_or_code"] = "required"
+                errors[FIELD_REDIRECT] = "required"
             else:
-                try:
-                    if raw.startswith("http"):
-                        code = SmartThingsOAuth.extract_code_from_redirect(raw)
-                    else:
-                        code = raw
-                    creds = await oauth.exchange_code(async_get_clientsession(self.hass), code)
-                except ValueError:
-                    errors["redirect_url_or_code"] = "invalid_redirect_url"
-                except Exception:  # pylint: disable=broad-except
-                    _LOGGER.exception("Code exchange failed")
-                    errors["redirect_url_or_code"] = "code_exchange_failed"
-                else:
-                    self._standalone_access_token = creds.access_token
-                    self._standalone_refresh_token = creds.refresh_token
+                credentials, error = await _exchange_code(self.hass, oauth, raw)
+                if credentials is not None:
+                    self._standalone_refresh_token = credentials.refresh_token
                     return await self.async_step_standalone_oauth_samsung()
+                errors[FIELD_REDIRECT] = error
 
-        schema = vol.Schema({"redirect_url_or_code": str})
         return self.async_show_form(
             step_id="standalone_oauth_link",
-            data_schema=schema,
+            data_schema=CODE_SCHEMA,
             errors=errors,
             description_placeholders={"authorization_url": auth_url},
         )
 
     async def async_step_standalone_oauth_samsung(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Step 3 of standalone OAuth: optional Samsung Account login."""
+    ) -> ConfigFlowResult:
+        """Step 3 of standalone OAuth: optional Samsung Account login for image downloads."""
         errors: dict[str, str] = {}
         if user_input is not None:
             email = (user_input.get("samsung_email") or "").strip()
             password = (user_input.get("samsung_password") or "").strip()
-            signin_client_secret = (
-                user_input.get(CONF_SAMSUNG_SIGNIN_CLIENT_SECRET) or ""
-            ).strip()
+            signin_client_secret = (user_input.get(CONF_SAMSUNG_SIGNIN_CLIENT_SECRET) or "").strip()
             data: dict[str, Any] = {
                 CONF_AUTH_MODE: AUTH_MODE_STANDALONE_OAUTH,
                 CONF_OAUTH_CLIENT_ID: self._standalone_client_id,
@@ -207,31 +226,28 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_SAMSUNG_SIGNIN_CLIENT_SECRET: signin_client_secret,
             }
             if email and password:
+                samsung_auth = SamsungAccountAuth(
+                    email=email,
+                    password=password,
+                    signin_client_id=SAMSUNG_LOGIN_CLIENT_ID,
+                    signin_client_secret=signin_client_secret,
+                )
                 try:
-                    samsung_auth = SamsungAccountAuth(
-                        email=email,
-                        password=password,
-                        signin_client_id=SAMSUNG_LOGIN_CLIENT_ID,
-                        signin_client_secret=signin_client_secret,
-                    )
-                    iot_creds = await samsung_auth.login_iot(async_get_clientsession(self.hass))
-                    data[CONF_SAMSUNG_IOT_REFRESH_TOKEN] = iot_creds.refresh_token
-                    data[CONF_SAMSUNG_IOT_AUTH_SERVER] = iot_creds.auth_server_url
+                    iot_credentials = await samsung_auth.login_iot(async_get_clientsession(self.hass))
                 except AuthError as err:
                     _LOGGER.warning("Samsung Account login failed: %s", err)
                     errors["base"] = "samsung_login_failed"
-                except Exception:  # pylint: disable=broad-except
-                    _LOGGER.exception("Unexpected error during Samsung login")
-                    errors["base"] = "unknown"
+                except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
+                    _LOGGER.warning("Samsung Account login could not complete: %s", type(err).__name__)
+                    errors["base"] = "cannot_connect"
+                else:
+                    data[CONF_SAMSUNG_IOT_REFRESH_TOKEN] = iot_credentials.refresh_token
+                    data[CONF_SAMSUNG_IOT_AUTH_SERVER] = iot_credentials.auth_server_url
             else:
-                _LOGGER.warning(
-                    "Samsung Account credentials not provided — IoT features unavailable"
-                )
+                _LOGGER.warning("Samsung Account credentials not provided; IoT features unavailable")
 
             if not errors:
-                return self.async_create_entry(
-                    title="Samsung Fridge Camera (Standalone OAuth)", data=data
-                )
+                return self.async_create_entry(title="Samsung Fridge Camera (Standalone OAuth)", data=data)
 
         schema = vol.Schema(
             {
@@ -253,75 +269,59 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             },
         )
 
-    # ---------------- PAT path (legacy) ----------------
+    # ---------------- PAT path ----------------
 
-    async def async_step_pat(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Enter a raw SmartThings Personal Access Token (legacy, 24h expiry)."""
+    async def async_step_pat(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Enter a SmartThings Personal Access Token (valid 24 hours; the rotator renews it)."""
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                info = await _validate_pat(self.hass, user_input)
+                info = await _validate_pat(self.hass, dict(user_input))
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
+            except Exception:  # noqa: BLE001 - last-resort guard in a config flow
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
                 if info.get(CONF_DEVICE_ID):
                     await self.async_set_unique_id(info[CONF_DEVICE_ID])
                     self._abort_if_unique_id_configured()
-                data = {**info, CONF_AUTH_MODE: AUTH_MODE_PAT}
                 return self.async_create_entry(
-                    title="Samsung Fridge Camera", data=data
+                    title="Samsung Fridge Camera", data={**info, CONF_AUTH_MODE: AUTH_MODE_PAT}
                 )
 
-        return self.async_show_form(
-            step_id="pat", data_schema=STEP_PAT_DATA_SCHEMA, errors=errors
-        )
+        return self.async_show_form(step_id="pat", data_schema=STEP_PAT_DATA_SCHEMA, errors=errors)
 
     # ---------------- Reauth ----------------
 
-    async def async_step_reauth(
-        self, entry_data: dict[str, Any]
-    ) -> FlowResult:
-        """Handle re-authentication when the token has expired."""
-        # OAuth-mode entries should never reach reauth: HA's OAuth2Session
-        # refreshes transparently and any hard failure is surfaced on the
-        # linked smartthings entry itself. If we do land here, offer both
-        # paths again so the user can re-link.
-        if entry_data.get(CONF_AUTH_MODE) == AUTH_MODE_OAUTH:
-            return await self.async_step_user()
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
+        """Re-authenticate: Standalone OAuth entries re-run the OAuth steps, others enter a new PAT.
+
+        (Entries from the removed "borrowed OAuth" mode land on the PAT step and become PAT entries.)
+        """
         if entry_data.get(CONF_AUTH_MODE) == AUTH_MODE_STANDALONE_OAUTH:
             return await self.async_step_reauth_standalone_oauth()
         return await self.async_step_reauth_confirm()
 
-    async def async_step_reauth_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle PAT re-authentication."""
         errors: dict[str, str] = {}
         if user_input is not None:
             reauth_entry = self._get_reauth_entry()
-            new_data = {
-                **reauth_entry.data,
-                CONF_TOKEN: user_input[CONF_TOKEN],
-                CONF_AUTH_MODE: AUTH_MODE_PAT,
-            }
+            new_data = {**reauth_entry.data, CONF_TOKEN: user_input[CONF_TOKEN], CONF_AUTH_MODE: AUTH_MODE_PAT}
             try:
                 await _validate_pat(self.hass, new_data)
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
+            except Exception:  # noqa: BLE001 - last-resort guard in a config flow
                 _LOGGER.exception("Unexpected exception during re-auth")
                 errors["base"] = "unknown"
             else:
-                return self.async_update_reload_and_abort(
-                    reauth_entry, data=new_data
-                )
+                return self.async_update_reload_and_abort(reauth_entry, data=new_data)
 
         return self.async_show_form(
             step_id="reauth_confirm",
@@ -329,182 +329,92 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-
     async def async_step_reauth_standalone_oauth(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Step 1 of standalone OAuth re-auth: collect client credentials."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            client_id = user_input.get(CONF_OAUTH_CLIENT_ID, "").strip()
-            client_secret = user_input.get(CONF_OAUTH_CLIENT_SECRET, "").strip()
-            if not client_id:
-                errors[CONF_OAUTH_CLIENT_ID] = "required"
-            elif not client_secret:
-                errors[CONF_OAUTH_CLIENT_SECRET] = "required"
-            else:
-                try:
-                    redirect_uri = config_entry_oauth2_flow.async_get_redirect_uri(self.hass)
-                except Exception:
-                    from .auth import DEFAULT_REDIRECT_URI
-                    redirect_uri = DEFAULT_REDIRECT_URI
-
-                oauth = SmartThingsOAuth(
+            client_id, client_secret, errors = _credentials_input(user_input)
+            if not errors:
+                self._reauth_standalone_oauth = SmartThingsOAuth(
                     client_id=client_id,
                     client_secret=client_secret,
-                    redirect_uri=redirect_uri,
+                    redirect_uri=_redirect_uri(self.hass),
                 )
-                self._reauth_standalone_oauth = oauth
                 self._reauth_standalone_client_id = client_id
                 self._reauth_standalone_client_secret = client_secret
-                self._reauth_standalone_redirect_uri = redirect_uri
-                self._reauth_standalone_auth_url = oauth.get_authorization_url()
+                self._reauth_standalone_auth_url = self._reauth_standalone_oauth.get_authorization_url()
                 return await self.async_step_reauth_standalone_oauth_link()
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_OAUTH_CLIENT_ID): str,
-                vol.Required(CONF_OAUTH_CLIENT_SECRET): str,
-            }
-        )
         return self.async_show_form(
-            step_id="reauth_standalone_oauth",
-            data_schema=schema,
-            errors=errors,
+            step_id="reauth_standalone_oauth", data_schema=CREDENTIALS_SCHEMA, errors=errors
         )
 
     async def async_step_reauth_standalone_oauth_link(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Step 2 of standalone OAuth re-auth: display auth URL, collect code."""
-        errors: dict[str, str] = {}
-        oauth: SmartThingsOAuth | None = getattr(
-            self, "_reauth_standalone_oauth", None
-        )
+    ) -> ConfigFlowResult:
+        """Step 2 of standalone OAuth re-auth: show the authorization URL, collect the code."""
+        oauth = self._reauth_standalone_oauth
         if oauth is None:
             return await self.async_step_reauth_standalone_oauth()
+        auth_url = self._reauth_standalone_auth_url or oauth.get_authorization_url()
 
-        auth_url: str = (
-            getattr(self, "_reauth_standalone_auth_url", "")
-            or oauth.get_authorization_url()
-        )
-
+        errors: dict[str, str] = {}
         if user_input is not None:
-            raw = user_input.get("redirect_url_or_code", "").strip()
+            raw = user_input.get(FIELD_REDIRECT, "").strip()
             if not raw:
-                errors["redirect_url_or_code"] = "required"
+                errors[FIELD_REDIRECT] = "required"
             else:
-                try:
-                    if raw.startswith("http"):
-                        code = SmartThingsOAuth.extract_code_from_redirect(raw)
-                    else:
-                        code = raw
-                    creds = await oauth.exchange_code(async_get_clientsession(self.hass), code)
-                except ValueError:
-                    errors["redirect_url_or_code"] = "invalid_redirect_url"
-                except Exception:  # pylint: disable=broad-except
-                    _LOGGER.exception("Code exchange failed during reauth")
-                    errors["redirect_url_or_code"] = "code_exchange_failed"
-                else:
+                credentials, error = await _exchange_code(self.hass, oauth, raw)
+                if credentials is not None:
                     reauth_entry = self._get_reauth_entry()
-                    new_data = {
-                        **reauth_entry.data,
-                        CONF_OAUTH_CLIENT_ID: self._reauth_standalone_client_id,
-                        CONF_OAUTH_CLIENT_SECRET: self._reauth_standalone_client_secret,
-                        CONF_OAUTH_REFRESH_TOKEN: creds.refresh_token,
-                    }
                     return self.async_update_reload_and_abort(
-                        reauth_entry, data=new_data
+                        reauth_entry,
+                        data={
+                            **reauth_entry.data,
+                            CONF_OAUTH_CLIENT_ID: self._reauth_standalone_client_id,
+                            CONF_OAUTH_CLIENT_SECRET: self._reauth_standalone_client_secret,
+                            CONF_OAUTH_REFRESH_TOKEN: credentials.refresh_token,
+                        },
                     )
+                errors[FIELD_REDIRECT] = error
 
-        schema = vol.Schema({"redirect_url_or_code": str})
         return self.async_show_form(
             step_id="reauth_standalone_oauth_link",
-            data_schema=schema,
+            data_schema=CODE_SCHEMA,
             errors=errors,
             description_placeholders={"authorization_url": auth_url},
         )
 
 
-class CannotConnect(HomeAssistantError):
-    """Error to indicate we cannot connect."""
-
-
-class InvalidAuth(HomeAssistantError):
-    """Error to indicate there is invalid auth."""
-
-
 class SamsungFamilyHubOptionsFlow(config_entries.OptionsFlow):
-    """Handle options for Samsung FamilyHub Fridge & AI Food Manager."""
+    """Options: rotator, location, polling and optional cameras."""
 
-    def __init__(self, config_entry: Any = None) -> None:
-        """Initialize options flow."""
-        self._custom_config_entry = config_entry
-
-    @property
-    def _entry(self) -> Any:
-        """Safely resolve config_entry across all Home Assistant versions."""
-        try:
-            val = self.config_entry
-            if val is not None:
-                return val
-        except Exception:
-            pass
-        return getattr(self, "_custom_config_entry", None)
-
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Manage the options."""
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        entry = self._entry
-        options = entry.options if entry else {}
-        data = entry.data if entry else {}
-
-        rotator_url = (
-            options.get(CONF_ROTATOR_URL)
-            or data.get(CONF_ROTATOR_URL)
-            or DEFAULT_ROTATOR_URL
-        )
-        rotator_api_key = options.get(CONF_ROTATOR_API_KEY) or data.get(CONF_ROTATOR_API_KEY) or ""
-        location_id = (
-            options.get(CONF_LOCATION_ID)
-            or data.get(CONF_LOCATION_ID)
-            or ""
-        )
-        food_interval = int(
-            options.get(CONF_FOOD_UPDATE_INTERVAL)
-            or data.get(CONF_FOOD_UPDATE_INTERVAL)
-            or DEFAULT_FOOD_UPDATE_INTERVAL
-        )
-        poll_interval = int(
-            options.get(CONF_POLL_INTERVAL)
-            or data.get(CONF_POLL_INTERVAL)
-            or DEFAULT_POLL_INTERVAL
-        )
+        entry = self.config_entry
         enable_bottom = bool(
-            options.get(CONF_ENABLE_BOTTOM_CAMERA)
-            if CONF_ENABLE_BOTTOM_CAMERA in options
-            else data.get(CONF_ENABLE_BOTTOM_CAMERA, DEFAULT_ENABLE_BOTTOM_CAMERA)
+            entry.options.get(CONF_ENABLE_BOTTOM_CAMERA)
+            if CONF_ENABLE_BOTTOM_CAMERA in entry.options
+            else entry.data.get(CONF_ENABLE_BOTTOM_CAMERA, DEFAULT_ENABLE_BOTTOM_CAMERA)
         )
-
         schema = vol.Schema(
             {
-                vol.Optional(CONF_ROTATOR_URL, default=rotator_url): str,
-                vol.Optional(CONF_ROTATOR_API_KEY, default=rotator_api_key): str,
-                vol.Optional(CONF_LOCATION_ID, default=location_id): str,
-                vol.Optional(CONF_FOOD_UPDATE_INTERVAL, default=food_interval): int,
-                vol.Optional(CONF_POLL_INTERVAL, default=poll_interval): vol.All(
-                    vol.Coerce(int), vol.Range(min=MIN_POLL_INTERVAL, max=MAX_POLL_INTERVAL)
-                ),
+                vol.Optional(CONF_ROTATOR_URL, default=entry_value(entry, CONF_ROTATOR_URL, DEFAULT_ROTATOR_URL)): str,
+                vol.Optional(CONF_ROTATOR_API_KEY, default=entry_value(entry, CONF_ROTATOR_API_KEY, "")): str,
+                vol.Optional(CONF_LOCATION_ID, default=entry_value(entry, CONF_LOCATION_ID, "")): str,
+                vol.Optional(
+                    CONF_FOOD_UPDATE_INTERVAL,
+                    default=int(entry_value(entry, CONF_FOOD_UPDATE_INTERVAL, DEFAULT_FOOD_UPDATE_INTERVAL)),
+                ): int,
+                vol.Optional(
+                    CONF_POLL_INTERVAL,
+                    default=int(entry_value(entry, CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=MIN_POLL_INTERVAL, max=MAX_POLL_INTERVAL)),
                 vol.Optional(CONF_ENABLE_BOTTOM_CAMERA, default=enable_bottom): bool,
             }
         )
-
-        return self.async_show_form(
-            step_id="init",
-            data_schema=schema,
-        )
-
+        return self.async_show_form(step_id="init", data_schema=schema)

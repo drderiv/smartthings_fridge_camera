@@ -101,7 +101,8 @@ async def test_options_flow_renders_and_saves():
         CONF_LOCATION_ID: "loc-guid-1234",
     }
 
-    flow = SamsungFamilyHubOptionsFlow(entry)
+    flow = SamsungFamilyHubOptionsFlow()
+    flow.config_entry = entry
 
     # 1. Test displaying form
     result = await flow.async_step_init()

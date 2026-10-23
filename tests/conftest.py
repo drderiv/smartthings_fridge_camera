@@ -379,12 +379,20 @@ class _ConfigFlowBase:
     def async_update_reload_and_abort(self, entry, *, data):
         return {"type": "abort", "reason": "reauth_successful"}
 
+    async def async_set_unique_id(self, unique_id=None):
+        self._unique_id = unique_id
+
+    def _abort_if_unique_id_configured(self):
+        return None
+
+    def _get_reauth_entry(self):
+        return self._reauth_entry
+
 
 class _OptionsFlowBase:
-    """Stub base class for config_entries.OptionsFlow."""
+    """Stub base class for config_entries.OptionsFlow (``config_entry`` is set by the test)."""
 
-    def __init__(self, *args, **kwargs):
-        pass
+    config_entry = None
 
     def async_show_form(self, *, step_id, data_schema=None, errors=None, description_placeholders=None):
         return {
@@ -404,6 +412,7 @@ ha_config_entries = _make_module(
     ConfigEntry=_ConfigEntry,
     ConfigFlow=_ConfigFlowBase,
     OptionsFlow=_OptionsFlowBase,
+    ConfigFlowResult=dict,
     SOURCE_IGNORE="ignore",
 )
 ha_const = _make_module(

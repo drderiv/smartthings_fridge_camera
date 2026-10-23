@@ -38,9 +38,7 @@ from homeassistant.helpers.typing import ConfigType
 from .api import AuthenticationError, FamilyHub, RateLimitError
 from .auth import SmartThingsOAuth, refresh_samsung_iot_token
 from .const import (
-    AUTH_MODE_OAUTH,
     AUTH_MODE_PAT,
-    AUTH_MODE_STANDALONE_OAUTH,
     CONF_AUTH_MODE,
     CONF_DEVICE_ID,
     CONF_FOOD_TOKEN,
@@ -57,6 +55,7 @@ from .const import (
     DEFAULT_FOOD_UPDATE_INTERVAL,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
+    AuthMode,
 )
 from .coordinator import FridgeCoordinator
 from .food import SamsungFoodClient, SamsungFoodCoordinator
@@ -176,14 +175,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: FridgeConfigEntry) -> bo
     startup: dict[str, Any] = {}
     pat_expiry: float | None = None
 
-    if auth_mode == AUTH_MODE_OAUTH:
-        raise ConfigEntryAuthFailed(translation_domain=DOMAIN, translation_key="oauth_mode_removed")
-    if auth_mode == AUTH_MODE_STANDALONE_OAUTH:
-        hub = await _build_standalone_hub(hass, entry, session, device_id)
-        pat_rotator = None
-    else:
-        hub, startup, pat_expiry = await _build_pat_hub(hass, entry, session, rotator, device_id)
-        pat_rotator = rotator
+    match auth_mode:
+        case AuthMode.OAUTH:
+            raise ConfigEntryAuthFailed(translation_domain=DOMAIN, translation_key="oauth_mode_removed")
+        case AuthMode.STANDALONE_OAUTH:
+            hub = await _build_standalone_hub(hass, entry, session, device_id)
+            pat_rotator = None
+        case _:
+            hub, startup, pat_expiry = await _build_pat_hub(hass, entry, session, rotator, device_id)
+            pat_rotator = rotator
 
     coordinator = FridgeCoordinator(
         hass,

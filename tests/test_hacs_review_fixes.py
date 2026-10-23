@@ -114,7 +114,7 @@ async def test_food_circle_view_properties_and_serving():
         assert str(resp._path) == img_file
 
         # 2b. Any non-empty authSig / wrong sig must NOT grant access
-        for query in ({"authSig": "anything"}, {"sig": "0" * 16}, {"sig": sig, "authSig": "x"} if False else {"authSig": sig}):
+        for query in ({"authSig": "anything"}, {"sig": "0" * 16}, {"sig": "é" * 16}, {"authSig": sig}):
             bogus_req = {"hass_user": None, "query": query}
             bogus_req_obj = MagicMock()
             bogus_req_obj.get.side_effect = lambda k, r=bogus_req: r.get(k)

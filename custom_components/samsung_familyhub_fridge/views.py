@@ -1,10 +1,12 @@
 """HTTP views for Samsung FamilyHub Fridge."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
-import os
 import re
+from pathlib import Path
+
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 
@@ -29,7 +31,7 @@ class FamilyHubFoodCircleView(HomeAssistantView):
 
     def __init__(self, cache_dir: str, secret: str = "") -> None:
         """Initialize the view."""
-        self.cache_dir = cache_dir
+        self.cache_dir = Path(cache_dir)
         self.secret = secret
 
     async def get(self, request: web.Request, filename: str) -> web.Response:
@@ -46,13 +48,13 @@ class FamilyHubFoodCircleView(HomeAssistantView):
         is_valid_sig = bool(
             sig
             and self.secret
-            and hmac.compare_digest(sig, generate_food_circle_sig(self.secret, filename))
+            and hmac.compare_digest(sig.encode(), generate_food_circle_sig(self.secret, filename).encode())
         )
         if not user and not is_valid_sig:
             return web.Response(status=401, text="Unauthorized")
 
-        file_path = os.path.join(self.cache_dir, filename)
-        if not os.path.isfile(file_path):
+        file_path = self.cache_dir / filename
+        if not await asyncio.to_thread(file_path.is_file):
             return web.Response(status=404, text="Food circle image not found")
 
         return web.FileResponse(file_path)
