@@ -28,6 +28,10 @@
                 "data": {
                     "oauth_client_id": "Client ID",
                     "oauth_client_secret": "Client Secret"
+                },
+                "data_description": {
+                    "oauth_client_id": "The client ID of your SmartThings OAuth-In app.",
+                    "oauth_client_secret": "The client secret of that app."
                 }
             },
             "standalone_oauth_link": {
@@ -35,6 +39,9 @@
                 "description": "Open this URL in a browser to authorize:\n\n`{authorization_url}`\n\nAfter authorizing, paste the full redirect URL or the raw authorization code below.",
                 "data": {
                     "redirect_url_or_code": "Redirect URL or authorization code"
+                },
+                "data_description": {
+                    "redirect_url_or_code": "After authorizing in the browser, paste the full address you were redirected to, or just the code from it."
                 }
             },
             "standalone_oauth_samsung": {
@@ -44,6 +51,11 @@
                     "samsung_email": "Samsung Account email (optional)",
                     "samsung_password": "Samsung Account password (optional)",
                     "samsung_signin_client_secret": "Samsung signin client secret (optional)"
+                },
+                "data_description": {
+                    "samsung_email": "Samsung Account email, used only to obtain the image-download token. Leave empty to skip.",
+                    "samsung_password": "Samsung Account password. It is not stored; only the resulting refresh token is.",
+                    "samsung_signin_client_secret": "Optional sign-in client secret; leave empty if you do not have one."
                 }
             },
             "pat": {
@@ -52,6 +64,10 @@
                 "data": {
                     "token": "SmartThings Token",
                     "device_id": "Device ID (optional)"
+                },
+                "data_description": {
+                    "token": "A SmartThings Personal Access Token. It expires after 24 hours; the token rotator keeps it fresh.",
+                    "device_id": "Optional. Leave empty to detect your Family Hub automatically."
                 }
             },
             "reauth_confirm": {
@@ -59,6 +75,9 @@
                 "description": "Your SmartThings token has expired. Please enter a new Personal Access Token.",
                 "data": {
                     "token": "New SmartThings Token"
+                },
+                "data_description": {
+                    "token": "A new SmartThings Personal Access Token."
                 }
             },
             "reauth_standalone_oauth": {
@@ -67,6 +86,10 @@
                 "data": {
                     "oauth_client_id": "Client ID",
                     "oauth_client_secret": "Client Secret"
+                },
+                "data_description": {
+                    "oauth_client_id": "The client ID of your SmartThings OAuth-In app.",
+                    "oauth_client_secret": "The client secret of that app."
                 }
             },
             "reauth_standalone_oauth_link": {
@@ -74,6 +97,9 @@
                 "description": "Open this URL in a browser to authorize:\n\n`{authorization_url}`\n\nThen paste the full redirect URL or the authorization code below.",
                 "data": {
                     "redirect_url_or_code": "Redirect URL or authorization code"
+                },
+                "data_description": {
+                    "redirect_url_or_code": "Paste the full redirect address, or just the code from it."
                 }
             }
         }
@@ -90,6 +116,14 @@
                     "food_update_interval": "Food Circles sync interval in seconds",
                     "poll_interval": "Fridge status poll interval in seconds (10-3600, default 60)",
                     "enable_bottom_camera": "Enable Bottom Camera (for 3-camera fridge models)"
+                },
+                "data_description": {
+                    "rotator_url": "Address of the token rotator, for example http://10.0.0.5:8765.",
+                    "rotator_api_key": "The rotator's api_key from its config.json (leave empty if it has none).",
+                    "location_id": "Override your fridge's SmartThings location ID. Leave empty to detect it.",
+                    "food_update_interval": "How often the food inventory is refreshed, in seconds.",
+                    "poll_interval": "How often the fridge status is polled, in seconds (10-3600). The first camera refresh after a door closes can lag by up to this long.",
+                    "enable_bottom_camera": "Create a third camera entity for models with a bottom camera."
                 }
             }
         }

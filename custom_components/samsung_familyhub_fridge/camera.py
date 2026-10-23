@@ -21,6 +21,10 @@ CAMERAS = (
 BOTTOM_CAMERA_INDEX = 2
 
 
+# Entities only read coordinator data, so Home Assistant may update them all at once.
+PARALLEL_UPDATES = 0
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,

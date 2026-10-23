@@ -147,6 +147,64 @@ Make sure to select the additional settings as follows and click "Save":
   <img src="assets/config/config-step-8.png" width=1200  alt="config-step-8"/>
 </p>
 
+# Reference
+
+## Choosing how to sign in
+
+* **Personal Access Token (recommended).** Create one at <https://account.smartthings.com/tokens>. SmartThings now expires these after **24 hours**, so for unattended use run the [token rotator](tools/pat_rotator/README.md), which renews the token and serves it to Home Assistant (see *Options* below).
+* **Standalone OAuth (advanced).** Uses your own SmartThings app (client ID and secret); the integration renews the access token itself. Setup requires the SmartThings CLI to create an "OAuth-In" app with the scopes `r:devices:* w:devices:* x:devices:*`. Optionally add a Samsung Account login to obtain the token used for image downloads.
+
+The device ID is optional; the integration finds your Family Hub automatically.
+
+## Options (Settings → Devices & Services → Samsung FamilyHub → Configure)
+
+| Option | Meaning |
+|---|---|
+| Rotator URL / Rotator API key | Where the token rotator listens and the key it requires (`api_key` in its `config.json`). |
+| Fridge Location ID | Override the SmartThings location ID used for the food inventory (normally detected automatically). |
+| Food Circles sync interval | Seconds between food inventory refreshes (default 600). |
+| Fridge status poll interval | Seconds between status polls (10-3600, default 60). Door-close detection, and so the camera refresh that follows, can lag by up to this long. |
+| Enable bottom camera | Creates a third camera for models that have one. |
+
+## Entities
+
+| Entity | Notes |
+|---|---|
+| `camera.family_hub_top`, `camera.family_hub_middle` | The interior door cameras. `camera.family_hub_bottom` appears when enabled. |
+| `sensor.family_hub_last_updated_at` | When the fridge last uploaded new camera images. |
+| `sensor.family_hub_food_inventory` | Number of items in the fridge; the items are in its attributes. Only created when a Samsung Food token is available. |
+
+Installs from before v2.0.0 keep their original entity IDs (for example `sensor.fridge_food_inventory`); see [BREAKING_CHANGES.md](BREAKING_CHANGES.md). Everything belongs to one **Family Hub** device.
+
+## Services
+
+* `samsung_familyhub_fridge.refresh`: ask the fridge to capture new camera images (it normally does so by itself when the door closes).
+* `samsung_familyhub_fridge.refresh_food_inventory`: re-read the food inventory now.
+
+Both take an optional `config_entry_id` if you have more than one fridge.
+
+## How data is updated
+
+The integration polls the SmartThings cloud (no local connection to the fridge). Every poll interval it reads the fridge status, downloads the camera images when Samsung publishes new ones, and, after a door-close, asks the fridge to refresh its cameras. The food inventory is read every 10 minutes and again about 12 seconds after new camera images arrive. Failed polls make the entities unavailable and are logged once; the last camera images stay available.
+
+## Supported devices and limitations
+
+* Samsung Family Hub refrigerators with interior cameras, reached through SmartThings. The food inventory and food circles need a model with AI Food Manager.
+* The food circles are whatever Samsung's cloud returns, which can be fewer items than the fridge's own screen shows.
+* A PAT lasts 24 hours, so without the token rotator the cameras stop until you re-authenticate.
+* The rotator signs in to your Samsung account with a browser; Samsung can change its pages or ask for 2FA/CAPTCHA at any time (the rotator pauses and logs when that happens).
+* SmartThings rate-limits requests per token; several Home Assistant installs sharing one token may hit it (the integration backs off and logs once).
+
+## Diagnostics
+
+On the integration page choose **Download diagnostics**. Tokens, OAuth secrets, the rotator URL/key and IDs are redacted.
+
+## Removing the integration
+
+1. **Settings → Devices & Services → Samsung FamilyHub → ⋮ → Delete.**
+2. Remove the integration through HACS (or delete `custom_components/samsung_familyhub_fridge`) and restart Home Assistant.
+3. Optional clean-up: delete `.storage/samsung_familyhub/` (cached food images) and the `samsung_familyhub_fridge.*` files in `.storage/`, stop the token rotator, and revoke unused tokens at <https://account.smartthings.com/tokens>.
+
 # 🥗 Live Food Circles & AI Food Manager Inventory
 
 For Samsung Family Hub refrigerators equipped with internal food cameras and AI Food Manager, this integration extracts and displays your active fridge inventory—including **live circular camera crops** cut directly from the fridge shelves, food names, compartments, and expiration dates—as a single clean entity:

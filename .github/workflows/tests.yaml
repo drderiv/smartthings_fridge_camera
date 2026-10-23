@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -r requirements_test.txt
-      - run: python -m pytest -q
+      - run: python -m pytest -q --cov=custom_components/samsung_familyhub_fridge --cov-fail-under=95
 
   home-assistant:
     name: Tests on real Home Assistant
