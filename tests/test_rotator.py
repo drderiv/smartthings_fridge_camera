@@ -144,29 +144,47 @@ def test_write_secret_is_private_and_atomic(tmp_path):
 
 # --- scheduler ---------------------------------------------------------------
 
-def run_briefly(job, seconds=0.5):
-    stop = threading.Event()
-    thread = threading.Thread(target=run_job, args=(job, stop, threading.Lock()), daemon=True)
-    thread.start()
-    time.sleep(seconds)
-    stop.set()
-    thread.join(timeout=3)
-    assert not thread.is_alive()
+class FakeStop:
+    """threading.Event stand-in: wait() records the timeout and returns instantly.
+
+    The loop under test ends after ``limit`` waits, so the tests are deterministic and never sleep.
+    """
+
+    def __init__(self, limit, on_wait=None):
+        self.waits = []
+        self.limit = limit
+        self.on_wait = on_wait
+
+    def is_set(self):
+        return len(self.waits) >= self.limit
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        if self.on_wait:
+            self.on_wait(len(self.waits))
+        return self.is_set()
 
 
-def test_job_runs_when_token_missing_then_waits(tmp_path):
+def run_job_until(job, limit, on_wait=None):
+    stop = FakeStop(limit, on_wait)
+    run_job(job, stop, threading.Lock())
+    return stop.waits
+
+
+def test_job_runs_when_token_missing_then_waits_until_due(tmp_path):
     token = tmp_path / "t.txt"
     calls = []
-    run_briefly(Job("t", token, 3600, lambda: (calls.append(1), write_secret(token, "x"))))
-    assert calls == [1]                               # rotated once, then slept (fresh token)
+    waits = run_job_until(Job("t", token, 3600, lambda: (calls.append(1), write_secret(token, "x"))), 1)
+    assert calls == [1]
+    assert 3500 < waits[0] <= 3600                        # fresh token: sleep until the next rotation
 
 
 def test_fresh_token_is_not_rotated(tmp_path):
     token = tmp_path / "t.txt"
     write_secret(token, "x")
     calls = []
-    run_briefly(Job("t", token, 3600, lambda: calls.append(1)))
-    assert calls == []
+    waits = run_job_until(Job("t", token, 3600, lambda: calls.append(1)), 1)
+    assert calls == [] and 3500 < waits[0] <= 3600
 
 
 def test_interactive_auth_halts_until_token_file_changes(tmp_path):
@@ -177,8 +195,9 @@ def test_interactive_auth_halts_until_token_file_changes(tmp_path):
         calls.append(1)
         raise InteractiveAuthRequired("2fa")
 
-    run_briefly(Job("t", token, 3600, action), seconds=0.6)
-    assert calls == [1]                               # no retry storm after the halt
+    waits = run_job_until(Job("t", token, 3600, action), 3)
+    assert calls == [1]                                   # no retry storm after the halt
+    assert waits == [30, 30, 30]                          # just polling the file
 
 
 def test_halt_resumes_when_token_file_is_refreshed_externally(tmp_path):
@@ -189,56 +208,43 @@ def test_halt_resumes_when_token_file_is_refreshed_externally(tmp_path):
         calls.append(1)
         raise InteractiveAuthRequired("2fa")
 
-    stop = threading.Event()
-    thread = threading.Thread(target=run_job, args=(Job("t", token, 0.2, action), stop, threading.Lock()), daemon=True)
-    thread.start()
-    time.sleep(0.3)
-    assert calls == [1]
-    write_secret(token, "refreshed-by-hand")          # e.g. generate_pat.py run in a terminal
-    time.sleep(0.2)
-    stop.set()
-    thread.join(timeout=3)
-    assert len(calls) == 1                            # resumed, token fresh -> sleeping, no new attempt
+    def refresh_by_hand(wait_number):                     # e.g. generate_pat.py run in a terminal
+        if wait_number == 2:
+            write_secret(token, "refreshed-by-hand")
+
+    waits = run_job_until(Job("t", token, 3600, action), 3, on_wait=refresh_by_hand)
+    assert len(calls) == 1                                # resumed, token fresh -> no new login attempt
+    assert waits[:2] == [30, 30] and 3500 < waits[2] <= 3600
 
 
-def test_failure_retries_after_delay_and_not_ready_is_quiet(tmp_path):
+def test_failures_back_off_exponentially_and_success_resets_them(tmp_path):
     token = tmp_path / "t.txt"
+    outcomes = iter([False, False, False, True])
     calls = []
 
-    def boom():
+    def action():
         calls.append(1)
-        raise RuntimeError("network")
+        if not next(outcomes):
+            raise RuntimeError("samsung changed its login page")
+        write_secret(token, "ok")
 
-    run_briefly(Job("t", token, 3600, boom, retry_s=0.1), seconds=0.55)
-    assert len(calls) >= 3
+    waits = run_job_until(Job("t", token, 3600, action, retry_s=100, max_retry_s=300), 4)
+    assert len(calls) == 4
+    assert waits[:3] == [100, 200, 300]                   # doubled, then capped
+    assert 3500 < waits[3] <= 3600                        # success: back to the normal schedule
 
+
+def test_not_ready_waits_quietly_for_an_hour(tmp_path):
     def not_ready():
         raise NotReady("no refresh token")
 
-    run_briefly(Job("t", token, 3600, not_ready), seconds=0.3)
+    assert run_job_until(Job("t", tmp_path / "t.txt", 3600, not_ready), 2) == [3600, 3600]
 
 
 def test_retry_delay_doubles_and_is_capped():
     assert [retry_delay(n, 600, 4 * 3600) for n in (1, 2, 3, 4, 5, 6, 7)] == [
         600, 1200, 2400, 4800, 9600, 14400, 14400,
     ]
-
-
-def test_failed_rotations_back_off_and_success_resets(tmp_path):
-    token = tmp_path / "t.txt"
-    stamps = []
-    outcomes = iter([False, False, False, True])
-
-    def action():
-        stamps.append(time.monotonic())
-        if not next(outcomes):
-            raise RuntimeError("samsung changed its login page")
-        write_secret(token, "ok")
-
-    run_briefly(Job("t", token, 3600, action, retry_s=0.05, max_retry_s=0.2), seconds=0.9)
-    gaps = [b - a for a, b in zip(stamps, stamps[1:])]
-    assert len(stamps) == 4
-    assert gaps[0] < gaps[1] <= 0.25 and gaps[2] <= 0.3        # 0.05 -> 0.1 -> 0.2 (capped)
 
 
 def test_headless_and_keepalive_options(tmp_path):
@@ -256,24 +262,17 @@ def test_headless_and_keepalive_options(tmp_path):
 def test_periodic_check_logs_only_changes_and_survives_errors(caplog):
     import logging
 
-    results = iter([True, True, False, False, RuntimeError("chromium crashed"), True])
-    calls = []
+    results = iter([True, True, False, RuntimeError("chromium crashed"), True])
 
     def action():
-        calls.append(1)
         outcome = next(results)
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
 
-    stop = threading.Event()
-    thread = threading.Thread(target=run_periodic, args=("Session", 0.02, action, stop, threading.Lock()), daemon=True)
+    stop = FakeStop(limit=6)                              # six waits = five checks
     with caplog.at_level(logging.INFO):
-        thread.start()
-        deadline = time.monotonic() + 3
-        while len(calls) < 6 and time.monotonic() < deadline:
-            time.sleep(0.02)
-        stop.set()
-        thread.join(timeout=2)
+        run_periodic("Session", 60, action, stop, threading.Lock())
     messages = [r.getMessage() for r in caplog.records if r.name == "rotator.scheduler"]
     assert messages == ["Session: OK", "Session: NOT OK", "Session: check failed: chromium crashed", "Session: OK"]
+    assert stop.waits == [60] * 6
