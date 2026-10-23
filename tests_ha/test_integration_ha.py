@@ -117,6 +117,32 @@ async def test_rejected_token_starts_reauth(hass, mock_entry, aioclient_mock):
     assert [flow["context"]["source"] for flow in flows] == ["reauth"]
 
 
+async def test_stale_pat_from_a_reachable_rotator_retries_instead_of_asking_the_user(hass, mock_entry, aioclient_mock):
+    aioclient_mock.get(STATUS_URL, status=401)             # SmartThings rejects the PAT...
+    aioclient_mock.get("http://127.0.0.1:8765/pat", json={"token": "rotated-pat", "next_rotation_at": 1})
+    mock_smartthings(aioclient_mock)                       # ...although the rotator answers normally
+
+    await hass.config_entries.async_setup(mock_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert mock_entry.state is ConfigEntryState.SETUP_RETRY
+    assert not hass.config_entries.flow.async_progress_by_handler(DOMAIN)      # no reauth prompt
+
+
+async def test_reauth_uses_the_rotators_current_pat_without_asking(hass, mock_entry, aioclient_mock):
+    mock_smartthings(aioclient_mock)
+    await setup_entry(hass, mock_entry)
+    aioclient_mock.get("http://127.0.0.1:8765/pat", json={"token": "brand-new-pat", "next_rotation_at": 4102444800})
+    asked_before = sum(1 for call in aioclient_mock.mock_calls if call[1].path == "/pat")
+
+    mock_entry.async_start_reauth(hass)
+    await hass.async_block_till_done()
+
+    assert not hass.config_entries.flow.async_progress_by_handler(DOMAIN)      # finished by itself
+    assert sum(1 for call in aioclient_mock.mock_calls if call[1].path == "/pat") > asked_before
+    assert mock_entry.state is ConfigEntryState.LOADED
+
+
 async def test_unreachable_smartthings_retries_setup(hass, mock_entry, aioclient_mock):
     import aiohttp
 

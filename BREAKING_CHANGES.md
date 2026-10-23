@@ -1,5 +1,7 @@
 # Breaking changes — v2.0.0 (draft, in progress)
 
+**Upgrading? Follow [UPGRADING.md](UPGRADING.md) for the step-by-step guide.**
+
 Running log of changes that need user action when upgrading from v1.x. Add an entry whenever a change alters behavior, configuration, or stored data.
 
 ## Requirements
@@ -67,6 +69,7 @@ New (non-breaking): last-known KICS/Whisk tokens and the location ID are cached 
 Other changes:
 
 - **Camera images appear within seconds of startup and about a minute after a door closes.** Each poll now reads the fridge status first, downloads images whenever their file IDs changed, and sends the camera-refresh command in the same pass. Before, those steps took turns across polls (two to three poll intervals), which got much slower once polling became 60 s.
+- **A rejected PAT no longer sends you to a dialog right away when the rotator is reachable.** Entities go unavailable, the integration keeps asking the rotator, and it recovers by itself when a good PAT appears; it only asks you to re-authenticate after about three hours. When it does ask, the dialog first tries the rotator's current PAT and only then asks you to paste one.
 - **Setup waits for the first poll.** A bad token or unreachable SmartThings now makes the entry retry (or ask for re-authentication) instead of loading with nothing working. Failed polls make entities unavailable and are logged once, instead of being retried silently for ten polls.
 - **Polling no longer depends on the "Last Updated At" sensor.** The cameras are coordinator-driven too, so disabling that sensor no longer freezes the camera images. A camera is *unavailable* until its first image has been downloaded.
 - **Services** (`refresh`, `refresh_food_inventory`) are registered once for the integration (they used to be re-registered per entry and bound to the last-loaded fridge), accept an optional `config_entry_id`, and raise translated errors (`auth_failed`, `rate_limited`, `refresh_failed`, `no_food_inventory`, `no_loaded_entry`).

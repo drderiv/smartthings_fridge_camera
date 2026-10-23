@@ -49,7 +49,7 @@ from .const import (
     MAX_POLL_INTERVAL,
     MIN_POLL_INTERVAL,
 )
-from .rotator import entry_value
+from .rotator import RotatorClient, entry_value
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -306,8 +306,20 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Handle PAT re-authentication."""
+        """Handle PAT re-authentication: try the rotator's token first, then ask for one."""
         errors: dict[str, str] = {}
+        if user_input is None:
+            reauth_entry = self._get_reauth_entry()
+            rotator = RotatorClient.from_entry(async_get_clientsession(self.hass), reauth_entry)
+            offered = await rotator.fetch_token("/pat")
+            if offered is not None and offered.token != reauth_entry.data.get(CONF_TOKEN):
+                new_data = {**reauth_entry.data, CONF_TOKEN: offered.token, CONF_AUTH_MODE: AUTH_MODE_PAT}
+                try:
+                    await _validate_pat(self.hass, new_data)
+                except (CannotConnect, InvalidAuth):
+                    pass  # the rotator's token does not work either; ask the user
+                else:
+                    return self.async_update_reload_and_abort(reauth_entry, data=new_data)
         if user_input is not None:
             reauth_entry = self._get_reauth_entry()
             new_data = {**reauth_entry.data, CONF_TOKEN: user_input[CONF_TOKEN], CONF_AUTH_MODE: AUTH_MODE_PAT}

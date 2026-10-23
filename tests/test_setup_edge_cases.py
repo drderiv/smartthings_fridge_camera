@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -250,26 +251,75 @@ async def test_successful_download_triggers_a_food_refresh():
     assert coordinator.last_updated_at is not None and coordinator.last_file_ids == ["f1"]
 
 
-async def test_auth_error_with_unchanged_pat_still_asks_for_reauth(mocked):
+def rejected_pat_coordinator(rotator_token, *, rotator_reachable=True):
     hub = hub_with(status_error=AuthenticationError("401"))
     rotator = MagicMock()
-    rotator.fetch_token = AsyncMock(return_value=SimpleNamespace(token="t", next_rotation_at=None))   # same PAT
-    coordinator = FridgeCoordinator(MagicMock(), MagicMock(), hub, rotator=rotator)
+    rotator.fetch_token = AsyncMock(return_value=rotator_token)
+    entry = MagicMock(data={CONF_TOKEN: "t"}, entry_id="grace-entry")
+    coordinator = FridgeCoordinator(MagicMock(), entry, hub, rotator=rotator)
     coordinator._pat_expires_at = 4102444800
-    with pytest.raises(integration.ConfigEntryAuthFailed):
+    if rotator_reachable:
+        coordinator.mark_rotator_seen()
+    return coordinator, hub
+
+
+@pytest.fixture(autouse=True)
+def clear_auth_grace():
+    from custom_components.samsung_familyhub_fridge import coordinator as module
+
+    module._AUTH_FAILING_SINCE.clear()
+    yield
+    module._AUTH_FAILING_SINCE.clear()
+
+
+async def test_rejected_pat_from_a_reachable_rotator_waits_instead_of_asking_for_reauth():
+    from custom_components.samsung_familyhub_fridge.coordinator import UpdateFailed
+
+    coordinator, hub = rejected_pat_coordinator(SimpleNamespace(token="t", next_rotation_at=None))   # same stale PAT
+    with pytest.raises(UpdateFailed) as err:
         await coordinator._async_update_data()
+    assert err.value.translation_key == "token_rejected"
 
 
-async def test_newer_pat_that_is_also_rejected_asks_for_reauth():
-    hub = hub_with(status_error=AuthenticationError("401"))
-    rotator = MagicMock()
-    rotator.fetch_token = AsyncMock(return_value=SimpleNamespace(token="new", next_rotation_at=None))
-    coordinator = FridgeCoordinator(MagicMock(), MagicMock(), hub, rotator=rotator)
-    coordinator._pat_expires_at = 4102444800
-    coordinator.config_entry = MagicMock(data={CONF_TOKEN: "t"})
-    with pytest.raises(integration.ConfigEntryAuthFailed):
+async def test_newer_pat_that_is_also_rejected_also_waits():
+    from custom_components.samsung_familyhub_fridge.coordinator import UpdateFailed
+
+    coordinator, hub = rejected_pat_coordinator(SimpleNamespace(token="new", next_rotation_at=None))
+    with pytest.raises(UpdateFailed):
         await coordinator._async_update_data()
     hub.update_token.assert_called_once_with("new")
+
+
+async def test_reauth_is_requested_after_the_grace_period(monkeypatch):
+    from custom_components.samsung_familyhub_fridge import coordinator as module
+
+    coordinator, _hub = rejected_pat_coordinator(SimpleNamespace(token="t", next_rotation_at=None))
+    module._AUTH_FAILING_SINCE["grace-entry"] = time.time() - module.AUTH_GRACE_S - 1
+    with pytest.raises(integration.ConfigEntryAuthFailed):
+        await coordinator._async_update_data()
+
+
+async def test_reauth_is_immediate_without_a_working_rotator():
+    coordinator, _hub = rejected_pat_coordinator(None, rotator_reachable=False)
+    with pytest.raises(integration.ConfigEntryAuthFailed):
+        await coordinator._async_update_data()
+
+
+async def test_waiting_ends_when_the_rotator_supplies_a_working_pat():
+    from custom_components.samsung_familyhub_fridge import coordinator as module
+    from custom_components.samsung_familyhub_fridge.coordinator import UpdateFailed
+
+    coordinator, hub = rejected_pat_coordinator(SimpleNamespace(token="t", next_rotation_at=None))
+    with pytest.raises(UpdateFailed):
+        await coordinator._async_update_data()
+    assert "grace-entry" in module._AUTH_FAILING_SINCE
+
+    async def healthy():
+        return {}
+
+    hub.get_current_device_status = healthy                      # the rotator has renewed the PAT
+    await coordinator._async_update_data()
+    assert "grace-entry" not in module._AUTH_FAILING_SINCE
 
 
 async def test_rotator_outage_delays_the_next_check():

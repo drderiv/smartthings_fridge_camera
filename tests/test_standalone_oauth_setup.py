@@ -9,6 +9,7 @@ async_step_reauth_standalone_oauth (not async_step_reauth_confirm).
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -213,11 +214,13 @@ async def test_reauth_standalone_oauth_routes_to_correct_step():
     )
 
 
-async def test_reauth_pat_routes_to_reauth_confirm():
-    """async_step_reauth for a PAT entry still routes to reauth_confirm (unchanged)."""
+async def test_reauth_pat_routes_to_reauth_confirm(mocked):
+    """async_step_reauth for a PAT entry routes to reauth_confirm (which asks the rotator first)."""
     hass = _make_hass()
     hass.config_entries.async_entries = MagicMock(return_value=[])
     flow = _make_flow(hass)
+    flow._reauth_entry = SimpleNamespace(data={"token": "old-pat"}, options={}, entry_id="e")
+    mocked.get("http://127.0.0.1:8765/pat", status=404)
 
     result = await flow.async_step_reauth({"auth_mode": "pat", "token": "old-pat"})
 

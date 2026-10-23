@@ -144,8 +144,10 @@ async def test_pat_reauth_unexpected_error():
         assert (await flow.async_step_reauth_confirm({CONF_TOKEN: "x"}))["errors"] == {"base": "unknown"}
 
 
-async def test_reauth_confirm_without_input_shows_the_form():
-    result = await make_flow(entry()).async_step_reauth_confirm()
+async def test_reauth_confirm_without_input_shows_the_form(mocked):
+    mocked.get("http://127.0.0.1:8765/pat", status=404)
+    flow = make_flow(SimpleNamespace(data={CONF_TOKEN: "old"}, options={}, entry_id="e1"))
+    result = await flow.async_step_reauth_confirm()
     assert result["type"] == "form" and result["step_id"] == "reauth_confirm"
 
 

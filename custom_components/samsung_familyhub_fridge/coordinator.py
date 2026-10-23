@@ -24,6 +24,12 @@ PAT_FALLBACK_LIFETIME = 22 * 3600   # assumed PAT lifetime if the rotator gives 
 PAT_RETRY_DELAY = 300               # re-check the rotator this soon after a failed fetch
 DOOR_CLOSE_FOOD_DELAY = 12          # let the fridge's AI vision finish before re-reading inventory
 DOWNLOAD_WARNINGS = 3               # warn about failed image downloads this many times, then once more
+ROTATOR_FRESH_S = 3600              # the rotator counts as reachable if it answered within this long
+AUTH_GRACE_S = 3 * 3600             # keep waiting for the rotator to supply a good PAT this long
+
+# When the PAT is rejected but the rotator is reachable, the fix is on the rotator's side. Remember
+# when that started (per entry, surviving setup retries) so reauth is only requested after a grace period.
+_AUTH_FAILING_SINCE: dict[str, float] = {}
 
 
 class FridgeCoordinator(DataUpdateCoordinator[None]):
@@ -50,11 +56,16 @@ class FridgeCoordinator(DataUpdateCoordinator[None]):
         self.last_file_ids: list[str] = []
         self.last_updated_at: float | None = None
         self._rotator = rotator          # only set in PAT mode; the rotator supplies the PAT
+        self._rotator_seen_at: float | None = None
         self._pat_expires_at = 0.0
         self._download_failures = 0
         self._rate_limited = False
 
     # --- PAT from the rotator ---------------------------------------------------
+
+    def mark_rotator_seen(self) -> None:
+        """Record that the rotator answered (setup read its /tokens document)."""
+        self._rotator_seen_at = time.time()
 
     def set_pat_expiry(self, expires_at: float | None) -> None:
         """Skip the rotator until ``expires_at`` (from the startup /tokens document)."""
@@ -72,6 +83,7 @@ class FridgeCoordinator(DataUpdateCoordinator[None]):
         if found is None:
             self._pat_expires_at = now + PAT_RETRY_DELAY
             return False
+        self._rotator_seen_at = now
         # If the rotator's rotation time has already passed (it is stuck or retrying), look again
         # in a few minutes rather than on every poll.
         self._pat_expires_at = max(found.next_rotation_at or now + PAT_FALLBACK_LIFETIME, now + PAT_RETRY_DELAY)
@@ -111,18 +123,30 @@ class FridgeCoordinator(DataUpdateCoordinator[None]):
                 translation_key="cannot_connect",
                 translation_placeholders={"error": str(err)},
             ) from err
+        _AUTH_FAILING_SINCE.pop(self.config_entry.entry_id, None)
         if self._rate_limited:
             self._rate_limited = False
             _LOGGER.info("SmartThings is no longer rate limiting requests")
 
     async def _async_recover_auth(self, err: AuthenticationError) -> None:
-        """After a 401/403: retry once with a newer PAT from the rotator, else start reauth."""
+        """After a 401/403: retry once with a newer PAT from the rotator, else wait or start reauth.
+
+        If the rotator is reachable, the token it serves is simply stale (for example its Samsung
+        login is stuck), so keep the entities unavailable and keep checking; the integration
+        recovers by itself as soon as the rotator has a good PAT. Only after a grace period, or
+        when there is no working rotator, ask the user to re-authenticate.
+        """
         if await self._async_sync_pat(force=True):
             try:
                 await self._async_poll()
                 return
             except AuthenticationError:
                 pass
+        now = time.time()
+        if self._rotator_seen_at is not None and now - self._rotator_seen_at < ROTATOR_FRESH_S:
+            since = _AUTH_FAILING_SINCE.setdefault(self.config_entry.entry_id, now)
+            if now - since < AUTH_GRACE_S:
+                raise UpdateFailed(translation_domain=DOMAIN, translation_key="token_rejected") from err
         raise ConfigEntryAuthFailed(translation_domain=DOMAIN, translation_key="auth_failed") from err
 
     async def _async_poll(self) -> None:

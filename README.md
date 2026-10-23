@@ -2,6 +2,8 @@
 
 This is a custom integration to output SmartThings Family Hub fridge camera feeds and live AI Food Manager inventory in [HomeAssistant](https://home-assistant.io).
 
+> ⬆️ **Upgrading from v1.x?** Follow [UPGRADING.md](UPGRADING.md); the full list of changes is in [BREAKING_CHANGES.md](BREAKING_CHANGES.md).
+
 > 💡 **What's New in this Enhanced Fork?**  
 > Check out the complete [**Feature Enhancements & Incremental Capabilities Guide (CHANGELOG_ENHANCEMENTS.md)**](CHANGELOG_ENHANCEMENTS.md) for full details on the AI Food Manager integration, automated 24-hour PAT rotation microservice, multi-mode OAuth authentication, and resilient caching.
 
@@ -190,7 +192,7 @@ The integration polls the SmartThings cloud (no local connection to the fridge).
 ## Supported devices and limitations
 
 * Samsung Family Hub refrigerators with interior cameras, reached through SmartThings. The food inventory and food circles need a model with AI Food Manager.
-* The food circles are whatever Samsung's cloud returns, which can be fewer items than the fridge's own screen shows.
+* **The food inventory is limited to 32 items, and it appears to be the 32 oldest.** That is what Samsung's cloud returns, and it matches the limit in the SmartThings mobile app, so a fridge holding more (the door display can show 40 or more) lists only 32 here, and the newest items may be missing. The integration puts no limit of its own on the list: if Samsung ever raises theirs, more items will simply appear. For reference, each item takes roughly 160 to 200 bytes, so about **80 to 100 items** would reach Home Assistant's 16 KB limit on stored state attributes. That limit would only matter for the history database, and v2.0.0 keeps the `items` list out of the database, so a longer list would still work.
 * A PAT lasts 24 hours, so without the token rotator the cameras stop until you re-authenticate.
 * The rotator signs in to your Samsung account with a browser; Samsung can change its pages or ask for 2FA/CAPTCHA at any time (the rotator pauses and logs when that happens).
 * SmartThings rate-limits requests per token; several Home Assistant installs sharing one token may hit it (the integration backs off and logs once).
@@ -212,6 +214,7 @@ For Samsung Family Hub refrigerators equipped with internal food cameras and AI 
 * **Entity**: `sensor.family_hub_food_inventory` (installs that predate v2.0.0 keep their original ID, `sensor.fridge_food_inventory`; use whichever your install shows under **Settings → Devices & Services → Entities**)
 * **State**: Count of active items currently inside the fridge (e.g. `37`)
 * **Attributes**: `total_items`, `last_synced`, and `items` (rich list of active items with circular crop image URLs, expiration dates, and timestamps).
+* **Limit**: Samsung's cloud returns at most 32 items, the same as the SmartThings mobile app; see *Supported devices and limitations* above.
 
 ### Setup (Opt-In & Zero Emulator):
 

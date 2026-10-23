@@ -193,6 +193,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: FridgeConfigEntry) -> bo
         poll_interval=int(entry_value(entry, CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)),
     )
     coordinator.set_pat_expiry(pat_expiry)
+    if startup:
+        coordinator.mark_rotator_seen()
     await coordinator.async_config_entry_first_refresh()  # ConfigEntryNotReady / reauth surface here
     entry.async_on_unload(coordinator.async_shutdown)
 

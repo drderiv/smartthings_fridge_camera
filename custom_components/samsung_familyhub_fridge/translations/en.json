@@ -72,7 +72,7 @@
             },
             "reauth_confirm": {
                 "title": "Re-authenticate SmartThings",
-                "description": "Your SmartThings token has expired. Please enter a new Personal Access Token.",
+                "description": "SmartThings rejected the Personal Access Token. If you use the token rotator, check that it is running and signed in to Samsung (the integration already asked it for a fresh token). Otherwise enter a new Personal Access Token.",
                 "data": {
                     "token": "New SmartThings Token"
                 },
@@ -177,6 +177,9 @@
         },
         "oauth_mode_removed": {
             "message": "Borrowing the SmartThings integration's OAuth credentials is no longer supported. Reconfigure using Standalone OAuth or a Personal Access Token."
+        },
+        "token_rejected": {
+            "message": "SmartThings rejected the token the rotator provided, so the rotator probably has not renewed it (its Samsung login may need attention). Check the rotator's log; the integration keeps checking and recovers by itself once a valid token is available."
         }
     },
     "entity": {
