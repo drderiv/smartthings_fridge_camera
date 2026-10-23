@@ -1,0 +1,53 @@
+# Breaking changes — v2.0.0 (draft, in progress)
+
+Running log of changes that need user action when upgrading from v1.x. Add an entry whenever a change alters behavior, configuration, or stored data.
+
+## Token rotator (`tools/pat_rotator`)
+
+- **Listens on `127.0.0.1` by default** (it used to listen on all interfaces). If Home Assistant runs on another machine, add `"bind_address": "<this machine's LAN/VPN IP>"` (or `"0.0.0.0"`) to the rotator's `config.json`.
+- **API key required for non-loopback binds.** Add `"api_key": "<long random string>"` to `config.json` (generate with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`); the rotator refuses to start without one when `bind_address` isn't loopback. Enter the same value in Home Assistant under **Settings → Devices & Services → Samsung FamilyHub → Configure → Rotator API key**.
+  - Upgrade order: update the integration and set the key first (the header is harmless to an old rotator), then update the rotator and restart it.
+- **`/tokens` no longer repeats each token under a second name.** Removed duplicate keys `pat`, `food_token` and `kics_food_token` (use `smartthings_pat`, `samsung_food_token`, `kics_token`), and the unused endpoint aliases `/food_circles_token` and `/location`. Anything of yours that reads the old names (the integration from v1.1 on already reads the new ones first) must switch.
+- `/health` now returns only `{"status": "healthy"}` (token availability flags removed).
+- Failure screenshots / HTML dumps are **off by default**; set `PAT_ROTATOR_KEEP_DEBUG=1` to enable. They are written next to the scripts, no longer to `/tmp`. The 2FA prompt screenshot moved from `/tmp/samsung_2fa_prompt.png` to the rotator folder.
+- `requirements.txt` now lists `requests`; re-run `setup.sh` (or `pip install -r requirements.txt`).
+- Token, session and debug files are written with owner-only (0600) permissions. Existing files keep their old permissions until rewritten: run `chmod 600 config.json smartthings_session.json *.txt` once.
+
+## Token rotator — rewritten
+
+`tools/pat_rotator` was rewritten as a small package (`rotator/`) with the same HTTP endpoints, `config.json` keys and file names, so an existing deployment's session cookies, tokens and refresh token carry over. Behavior differences:
+
+- **Start command unchanged** (`python main.py`); the three `generate_*.py` scripts remain as thin wrappers (same as `main.py pat|food|kics`). Importing functions from the old modules no longer works.
+- **One browser at a time.** The PAT, Food and KICS jobs no longer launch Chromium concurrently or race on the shared session file.
+- **Rotation schedule follows the token file's age**, so a token refreshed by hand is picked up immediately. After Samsung demands 2FA/CAPTCHA, automatic attempts pause until the token file changes (no more retries every 10 minutes).
+- **`next_rotation_at` honors your configured intervals** (the PAT value used to be fixed at 23 h regardless of `rotation_interval_hours`).
+- **`/food_token` no longer falls back to the KICS token** (it used to serve one for the other). `/kics_token` still falls back to the old `active_bearer_token.txt` name.
+- **Samsung Food token is only saved if Whisk accepts it.** Previously an unvalidated "first captured" value could be written.
+- **Log file**: `rotator.log` now rotates at 256 KB (keeps `rotator.log.1`) instead of being trimmed to 100 lines every Sunday.
+- PAT names are timestamped (`ha-fridge-camera-YYYYMMDD-HHMMSS`).
+- CLI: `generate_food_token.py` takes `--no-headless` (the old `--headless` flag was a no-op). `generate_kics_token.py` accepts the same flags as before.
+- `scripts/create_oauth_app.py` was removed (unused helper for the Standalone OAuth setup).
+
+## Integration — image links
+
+- Food-circle image URLs are signed with a new random per-installation secret (stored in `.storage/samsung_familyhub_fridge.view_secret`) instead of the config entry ID. Existing `?sig=` URLs stop working and are replaced at the next food sync (≤10 min). The `authSig` query parameter is no longer accepted (it used to grant access with any value).
+- Image filenames must match `[A-Za-z0-9_-]{1,64}.jpg`; `inventory.json` is no longer servable.
+
+## Integration — token and location sources removed
+
+The rotator (set under **Configure → Rotator URL / API key**) is now the single source for tokens. Removed:
+
+- **`input_text` helpers**: `input_text.smartthings_pat`, `input_text.samsung_food_token`, `input_text.kics_food_token`, `input_text.kics_location_id` and `input_text.pat_rotator_url` are no longer read, listened to, or written. The matching REST sensors/automations from the v1.0.x setup can be deleted. (They also exposed live tokens to the recorder database.)
+- **Token file scanning**: `samsung_food_token.txt`, `kics_food_token.txt` and `active_bearer_token.txt` are no longer searched for under the config dir, `/config`, `/tmp`, the integration folder, the repo `scripts/` folder, or `~/smartthings_pat_rotator`.
+- **Location ID fallbacks**: `sensor.kics_food_token` / `sensor.samsung_food_token` attributes, the "device whose name contains 'hub'" guess, and `config.json` file reads are gone. New order: *Configure → Fridge Location ID* override → SmartThings device record → rotator `/location_id`. The integration no longer writes into `input_text.kics_location_id`.
+- The legacy `www/samsung_familyhub/food_circles/inventory.json` fallback is gone (the cache lives in `.storage/samsung_familyhub/food_circles/`).
+
+New (non-breaking): last-known KICS/Whisk tokens and the location ID are cached in `.storage/samsung_familyhub_fridge.token_cache` so a brief rotator outage during an HA restart doesn't stop the food sensor.
+
+## Log hygiene
+
+- Debug-level details only: location IDs are no longer logged at INFO; response bodies are no longer included in warnings/exception messages.
+
+---
+
+_Still to come (from CODE_REVIEW.md): C-2/C-3/C-4 auth lifecycle, entity/device changes (S-5, may change entity IDs), services (S-2). Add entries here as they land._
