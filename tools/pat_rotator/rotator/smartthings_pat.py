@@ -13,7 +13,7 @@ from playwright.sync_api import Error as PlaywrightError
 from .browser import KEEP_DEBUG, browser_context, first_visible, save_session, wait_for
 from .errors import InteractiveAuthRequired, RotatorError
 from .files import write_secret
-from .samsung_login import CAPTCHA_HINTS, Prompt, VERIFICATION_HINTS, is_interactive, sign_in
+from .samsung_login import Prompt, captcha_visible, is_interactive, needs_verification, sign_in
 
 _LOGGER = logging.getLogger("rotator.pat")
 
@@ -161,17 +161,18 @@ def _extract_token(page: Page) -> list[str]:
 
 
 def _explain_failure(page: Page, err: Exception, headless: bool) -> None:
-    """Log what the page looked like; turn CAPTCHA / 2FA walls into InteractiveAuthRequired."""
+    """Log what the page looked like; turn a visible CAPTCHA / 2FA wall into InteractiveAuthRequired."""
     try:
         _LOGGER.error("PAT generation failed at %s ('%s'): %s", page.url, page.title(), err)
-        content = page.content().lower()
         if KEEP_DEBUG:  # the tokens page can display a live PAT, so this is opt-in
             base = Path(__file__).resolve().parent.parent
             write_secret(base / "smartthings_pat_error.html", page.content())
             page.screenshot(path=str(base / "smartthings_pat_error.png"))
+        challenged = headless and captcha_visible(page)
+        verifying = headless and not is_interactive() and needs_verification(page)
     except PlaywrightError:
         return
-    if headless and any(hint in content for hint in CAPTCHA_HINTS):
+    if challenged:
         raise InteractiveAuthRequired("Samsung presented a CAPTCHA") from err
-    if headless and not is_interactive() and any(hint in content for hint in VERIFICATION_HINTS):
+    if verifying:
         raise InteractiveAuthRequired("two-factor verification required") from err

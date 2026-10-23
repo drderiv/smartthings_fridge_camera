@@ -8,3 +8,4 @@ voluptuous>=0.14
 requests>=2.31          # tools/pat_rotator
 requests-mock>=1.11     # tools/pat_rotator tests
 pytest-cov>=5
+playwright>=1.40,<2     # imported (not launched) by the rotator's login helpers

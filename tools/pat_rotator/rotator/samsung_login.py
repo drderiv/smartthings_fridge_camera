@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page
 
 from .browser import click_first_visible, first_visible, scopes, wait_for
@@ -78,12 +80,24 @@ POSTPONE_BUTTONS = (
     "button[data-log-id='not-now']", "button:has-text('Not now')", "a:has-text('Not now')",
     "button:has-text('Later')", "button:has-text('Remind me later')", "button:has-text('Cancel')",
 )
-VERIFICATION_HINTS = (
-    "two-step", "two-factor", "2-step", "verification code", "security code",
-    "galaxy device notification", "check your galaxy", "check your phone to verify",
+# A verification step or CAPTCHA only counts when something about it is *visible*. Searching the
+# page's HTML for words like "recaptcha" is wrong: Samsung's login page mentions it on every
+# successful sign-in (as a console message and in scripts).
+VERIFICATION_TEXT = (
+    "text=/two-step|two-factor|2-step|verification code|security code|check your galaxy"
+    "|galaxy device notification|check your phone to verify/i"
 )
-CAPTCHA_HINTS = ("recaptcha", "g-recaptcha", "challenge-running", "cf-turnstile", "captcha")
+CAPTCHA_ELEMENTS = (
+    "iframe[src*='recaptcha'][src*='bframe']",
+    "iframe[title*='recaptcha challenge' i]",
+    "img[alt*='captcha' i]",
+    "input[name*='captcha' i]",
+    "input[id*='captcha' i]",
+)
 
+SIGN_IN_TIMEOUT_S = 40                 # unattended: the tokens page normally appears within seconds
+INTERACTIVE_SIGN_IN_TIMEOUT_S = 300    # a person may be solving a CAPTCHA or approving a login
+POSTPONE_AFTER_S = 8                   # only dismiss optional screens once the sign-in has had time
 DEVICE_APPROVAL_TIMEOUT_S = 60
 PASSWORD_STEP_TIMEOUT_S = 30
 
@@ -98,18 +112,6 @@ def submit(page: Page, buttons: tuple[str, ...]) -> None:
     """Click the first visible button, else press Enter."""
     if not click_first_visible(page, buttons):
         page.keyboard.press("Enter")
-
-
-def accept_screens(page: Page, buttons: tuple[str, ...], rounds: int = 3) -> None:
-    """Click through consent-style screens until none is visible."""
-    for _ in range(rounds):
-        for target in scopes(page):
-            box = first_visible(target, AGREE_ALL)
-            if box is not None:
-                box.click()
-        if not click_first_visible(scopes(page), buttons):
-            return
-        page.wait_for_timeout(3000)
 
 
 def fill_credentials(page: Page, email: str, password: str) -> None:
@@ -127,13 +129,20 @@ def fill_credentials(page: Page, email: str, password: str) -> None:
         page.wait_for_timeout(3000)
 
 
-def _page_mentions(page: Page, hints: tuple[str, ...]) -> bool:
-    text = page.content().lower()
-    return any(hint in text for hint in hints)
+def captcha_visible(page: Page) -> bool:
+    return first_visible(scopes(page), CAPTCHA_ELEMENTS) is not None
 
 
 def needs_verification(page: Page) -> bool:
-    return _page_mentions(page, VERIFICATION_HINTS) or first_visible(scopes(page), CODE_FIELDS) is not None
+    """True if a 2FA code field or verification prompt is actually showing."""
+    return first_visible(scopes(page), (*CODE_FIELDS, VERIFICATION_TEXT)) is not None
+
+
+def _is_signed_in(signed_in: Callable[[], bool]) -> bool:
+    try:
+        return signed_in()
+    except PlaywrightError:  # the page is navigating
+        return False
 
 
 def sign_in(
@@ -149,26 +158,44 @@ def sign_in(
 ) -> None:
     """Drive the Samsung sign-in form until ``signed_in()`` is true.
 
-    Raises InteractiveAuthRequired when a human is needed but none is available.
+    After the password is submitted we wait for the outcome and react only to what is visible:
+    a consent screen (accept it), a verification step (needs a person), a CAPTCHA (needs a
+    person). Raises InteractiveAuthRequired when a human is needed but none is available.
     """
     interactive = is_interactive() if interactive is None else interactive
     if not email or not password:
         raise RotatorError("Samsung email and password are required when no saved session exists")
-
-    form = first_visible(scopes(page), EMAIL_FIELDS)
-    if form is None:
+    if first_visible(scopes(page), EMAIL_FIELDS) is None:
         raise RotatorError("Could not find the Samsung Account email field")
-    fill_credentials(page, email, password)
-    accept_screens(page, CONSENT_BUTTONS)
 
-    if not signed_in():
-        if _page_mentions(page, CAPTCHA_HINTS) and headless:
+    fill_credentials(page, email, password)
+
+    timeout = SIGN_IN_TIMEOUT_S if (headless and not interactive) else INTERACTIVE_SIGN_IN_TIMEOUT_S
+    started = time.monotonic()
+    verified = False
+    while time.monotonic() - started < timeout:
+        if _is_signed_in(signed_in):
+            return
+        if captcha_visible(page) and not interactive:
             raise InteractiveAuthRequired("Samsung presented a CAPTCHA")
-        if needs_verification(page):
+        if not verified and needs_verification(page):
             if not interactive:
                 raise InteractiveAuthRequired("two-factor verification required")
             _verify(page, signed_in, method, prompt)
-        accept_screens(page, CONSENT_BUTTONS + POSTPONE_BUTTONS, rounds=4)
+            verified = True
+            continue
+        for target in scopes(page):
+            box = first_visible(target, AGREE_ALL)
+            if box is not None:
+                box.click()
+        buttons = CONSENT_BUTTONS
+        if verified or time.monotonic() - started > POSTPONE_AFTER_S:
+            buttons = CONSENT_BUTTONS + POSTPONE_BUTTONS
+        click_first_visible(scopes(page), buttons)
+        page.wait_for_timeout(1000)
+    if _is_signed_in(signed_in):
+        return
+    raise RotatorError(f"Samsung sign-in did not finish within {timeout}s (page: {page.url})")
 
 
 def _verify(page: Page, signed_in: Callable[[], bool], method: str, prompt: Prompt) -> None:

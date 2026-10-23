@@ -25,6 +25,7 @@ Running log of changes that need user action when upgrading from v1.x. Add an en
 - **One browser at a time.** The PAT, Food and KICS jobs no longer launch Chromium concurrently or race on the shared session file.
 - **Rotation schedule follows the token file's age**, so a token refreshed by hand is picked up immediately. After Samsung demands 2FA/CAPTCHA, automatic attempts pause until the token file changes (no more retries every 10 minutes).
 - **New optional `config.json` keys:** `headless` (default `true`) and `session_keepalive_minutes` (default `0`, off); `python main.py session` reports whether the saved SmartThings session is still signed in.
+- **Samsung sign-in waits for the result and only reacts to what is visible.** An earlier build of the rewrite searched the page's HTML for "recaptcha" (present on every successful login) and could declare a CAPTCHA while the tokens page was still loading, pausing rotation for no reason.
 - **Failed rotations back off** (10 min, 20 min, 40 min ... capped at 4 h) instead of retrying every 10 minutes forever, so a changed Samsung login page can't trigger dozens of automated logins overnight.
 - **`next_rotation_at` honors your configured intervals** (the PAT value used to be fixed at 23 h regardless of `rotation_interval_hours`).
 - **`/food_token` no longer falls back to the KICS token** (it used to serve one for the other). `/kics_token` still falls back to the old `active_bearer_token.txt` name.
