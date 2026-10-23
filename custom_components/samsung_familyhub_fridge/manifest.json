@@ -2,10 +2,7 @@
   "domain": "samsung_familyhub_fridge",
   "name": "Samsung FamilyHub Fridge & AI Food Manager",
   "codeowners": [
-    "@drderiv",
-    "@TryTryAgain",
-    "@ibielopolskyi",
-    "@nachtschatt3n"
+    "@drderiv"
   ],
   "config_flow": true,
   "dependencies": [

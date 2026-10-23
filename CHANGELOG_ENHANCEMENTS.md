@@ -1,17 +1,17 @@
 # 🚀 Feature Enhancements & Incremental Capabilities
 
-This document details the major functional enhancements, architectural upgrades, and capabilities introduced in this fork relative to the upstream parent [`TryTryAgain/smartthings_fridge_camera`](https://github.com/TryTryAgain/smartthings_fridge_camera) repository (which built upon the original foundation by [ibielopolskyi](https://github.com/ibielopolskyi/smartthings_fridge_camera)).
+This project is based on [ibielopolskyi's SmartThings Family Hub Fridge Camera Integration for Home Assistant](https://github.com/ibielopolskyi/smartthings_fridge_camera), with significant changes that, for refrigerators with AI features, provide the same functionality available in the SmartThings mobile app. This document describes those enhancements.
 
 ---
 
 ## 📋 Executive Summary of Changes
 
-| Area | Upstream Parent ([TryTryAgain](https://github.com/TryTryAgain/smartthings_fridge_camera)) | This Enhanced Version |
+| Area | Original Integration | This Version |
 | :--- | :--- | :--- |
-| **Food Inventory Tracking** | ❌ Not supported (only camera feeds) | ✅ **AI Food Manager (`sensor.fridge_food_inventory`)**: Tracks active food items, live circular camera crops, stock photos, expiration dates, and item age ("Days Old") |
+| **Food Inventory Tracking** | ❌ Not supported (only camera feeds) | ✅ **AI Food Manager (`sensor.family_hub_food_inventory`)**: Tracks active food items, live circular camera crops, stock photos, expiration dates, and item age ("Days Old") |
 | **Live Camera Food Circles** | ❌ Not supported | ✅ **KICS EPA Food Circles**: Retrieves actual circular camera cutouts of food items taken by the fridge's interior camera + seamless fallback to catalog stock photos |
-| **Local Image Caching & HA Protection** | ❌ None | ✅ **Protected Image Cache (`.storage/...`)**: Keeps state attributes lean (~2.2KB) to stay safely under Home Assistant's 16KB database recorder limit, with auto cache-busting, stale file pruning, and authenticated HTTP serving via `async_sign_path` |
-| **Persistence & Cloud Fault Tolerance** | ❌ Memory wiped on reboot; no cloud retry | ✅ **Persistent On-Disk Cache (`inventory.json`)** across Home Assistant reboots + 3-attempt exponential backoff retry on cloud gateway timeouts (502/503/504) |
+| **Local Image Caching & HA Protection** | ❌ None | ✅ **Protected Image Cache (`.storage/...`)**: Keeps state attributes lean (~2.2KB) to stay safely under Home Assistant's 16KB database recorder limit, with auto cache-busting, stale file pruning, and serving through signed links |
+| **Persistence & Cloud Fault Tolerance** | ❌ Memory wiped on reboot; no cloud retry | ✅ **Persistent On-Disk Cache (`inventory.json`)** across Home Assistant reboots + 3-attempt retry on cloud gateway timeouts (502/503/504) |
 | **Inventory Sync Trigger** | ❌ None | ✅ **Automatic door-close triggered sync** with cloud vision commit delay (~12s) + periodic polling |
 | **Token Lifetime & Rotation** | ⚠️ Expired after 24h (PAT), requiring manual recreation | ✅ **Autonomous Multi-Token Rotator microservice**: Headless renewal of SmartThings PAT (every 23h) and Samsung Food / KICS tokens with local REST server and zero downtime |
 | **Token Synchronization & Caching** | ❌ Required manual re-auth / integration restart | ✅ **Native Options Flow (`rotator_url`) + Startup Priming & In-Memory TTL Caching**: Single startup query, zero routine rotator polling, and optional legacy helper listeners |
@@ -25,7 +25,7 @@ This document details the major functional enhancements, architectural upgrades,
 
 For Samsung Family Hub refrigerators equipped with internal cameras and AI food vision, this fork provides a comprehensive food inventory tracking platform without entity clutter:
 
-* **Primary Sensor**: [`sensor.fridge_food_inventory`](custom_components/samsung_familyhub_fridge/sensor.py)
+* **Primary Sensor**: [`sensor.family_hub_food_inventory`](custom_components/samsung_familyhub_fridge/sensor.py)
   * **State**: Total count of active items currently in the fridge (e.g., `33`).
   * **Attributes**:
     * `total_items`: Total count of active food items.
@@ -53,7 +53,7 @@ For Samsung Family Hub refrigerators equipped with internal cameras and AI food 
 * **Home Assistant Recorder Protection**:
   * Refrigerator camera crop URLs are hosted on AWS S3 with extensive signed security parameters. Storing dozens of long remote URLs in Home Assistant entity attributes would produce payloads exceeding 70KB, violating Home Assistant's 16KB database recorder limit and producing database warnings.
   * This integration downloads image crops locally to `.storage/samsung_familyhub/food_circles/<clean_id>_<url_hash>.jpg` and exposes them via authenticated signed paths (`/api/samsung_familyhub/food_circles/...`).
-  * **97% Size Reduction**: Shrinks the `sensor.fridge_food_inventory` attribute payload from **>70KB down to ~2.2KB**, eliminating recorder warnings and reducing database overhead.
+  * **97% Size Reduction**: Shrinks the `sensor.family_hub_food_inventory` attribute payload from **>70KB down to ~2.2KB**, eliminating recorder warnings and reducing database overhead.
 * **Automatic Cache-Busting**:
   * The integration computes an MD5 hash of the canonical S3 image path. When the refrigerator takes a new photo of an item, a new hash is generated, automatically updating the filename and busting browser caches.
 * **Automatic Stale File Pruning**:
