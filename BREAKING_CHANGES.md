@@ -1,14 +1,16 @@
-# Breaking changes — v2.0.0 (draft, in progress)
+# Breaking changes in v2.0.0
 
-**Upgrading? Follow [UPGRADING.md](UPGRADING.md) for the step-by-step guide.**
+**Upgrading? Follow [UPGRADING.md](UPGRADING.md) for the step-by-step guide.** This page lists everything that changed and why, for reference.
 
-Running log of changes that need user action when upgrading from v1.x. Add an entry whenever a change alters behavior, configuration, or stored data.
+## Overview
+
+v2 is a **MAJOR** technical upgrade, including a significant refactor and many improvements. There are several breaking changes that require user action when upgrading from v1.x. Please read [UPGRADING.md](UPGRADING.md) for the step-by-step guide.
 
 ## Requirements
 
-- **Home Assistant 2024.11.0 or newer** (`hacs.json` previously said 2024.1.0, but the config flow already needed 2024.11 APIs such as `_get_reauth_entry`). The integration now also relies on `OptionsFlow.config_entry`, typed `entry.runtime_data` and Python 3.12 syntax. It is developed and tested against the current Home Assistant release only; older versions between 2024.11 and today are untested.
+- **Home Assistant 2024.11.0 or newer** (v1.x declared 2024.1.0, but its config flow already needed newer APIs). v2.0.0 also relies on `OptionsFlow.config_entry`, typed `entry.runtime_data` and Python 3.12 syntax. It is developed and tested against the current Home Assistant release only; versions between 2024.11 and today are untested.
 
-## Token rotator (`tools/pat_rotator`)
+## Token rotator: settings and endpoints (`tools/pat_rotator`)
 
 - **Listens on `127.0.0.1` by default** (it used to listen on all interfaces). If Home Assistant runs on another machine, add `"bind_address": "<this machine's LAN/VPN IP>"` (or `"0.0.0.0"`) to the rotator's `config.json`.
 - **API key required for non-loopback binds.** Add `"api_key": "<long random string>"` to `config.json` (generate with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`); the rotator refuses to start without one when `bind_address` isn't loopback. Enter the same value in Home Assistant under **Settings → Devices & Services → Samsung FamilyHub → Configure → Rotator API key**.
@@ -19,7 +21,7 @@ Running log of changes that need user action when upgrading from v1.x. Add an en
 - `requirements.txt` now lists `requests`; re-run `setup.sh` (or `pip install -r requirements.txt`).
 - Token, session and debug files are written with owner-only (0600) permissions. Existing files keep their old permissions until rewritten: run `chmod 600 config.json smartthings_session.json *.txt` once.
 
-## Token rotator — rewritten
+## Token rotator: rewritten
 
 `tools/pat_rotator` was rewritten as a small package (`rotator/`) with the same HTTP endpoints, `config.json` keys and file names, so an existing deployment's session cookies, tokens and refresh token carry over. Behavior differences:
 
@@ -90,7 +92,3 @@ Other changes:
 ## Log hygiene
 
 - Debug-level details only: location IDs are no longer logged at INFO; response bodies are no longer included in warnings/exception messages.
-
----
-
-_Still to come (from CODE_REVIEW.md): C-2/C-3/C-4 auth lifecycle, entity/device changes (S-5, may change entity IDs), services (S-2). Add entries here as they land._
