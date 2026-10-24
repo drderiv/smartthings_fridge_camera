@@ -52,6 +52,7 @@ class FridgeCoordinator(DataUpdateCoordinator[None]):
             update_interval=timedelta(seconds=poll_interval),
         )
         self.hub = hub
+        self._entry = config_entry
         self.food_coordinator: SamsungFoodCoordinator | None = None
         self.last_file_ids: list[str] = []
         self.last_updated_at: float | None = None
@@ -96,7 +97,7 @@ class FridgeCoordinator(DataUpdateCoordinator[None]):
 
     def _persist_pat(self, token: str) -> None:
         """Store the PAT in the config entry so a restart can use it before the rotator answers."""
-        entry = self.config_entry
+        entry = self._entry
         if entry.data.get(CONF_TOKEN) != token:
             self.hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_TOKEN: token})
 
@@ -123,7 +124,7 @@ class FridgeCoordinator(DataUpdateCoordinator[None]):
                 translation_key="cannot_connect",
                 translation_placeholders={"error": str(err)},
             ) from err
-        _AUTH_FAILING_SINCE.pop(self.config_entry.entry_id, None)
+        _AUTH_FAILING_SINCE.pop(self._entry.entry_id, None)
         if self._rate_limited:
             self._rate_limited = False
             _LOGGER.info("SmartThings is no longer rate limiting requests")
@@ -144,7 +145,7 @@ class FridgeCoordinator(DataUpdateCoordinator[None]):
                 pass
         now = time.time()
         if self._rotator_seen_at is not None and now - self._rotator_seen_at < ROTATOR_FRESH_S:
-            since = _AUTH_FAILING_SINCE.setdefault(self.config_entry.entry_id, now)
+            since = _AUTH_FAILING_SINCE.setdefault(self._entry.entry_id, now)
             if now - since < AUTH_GRACE_S:
                 raise UpdateFailed(translation_domain=DOMAIN, translation_key="token_rejected") from err
         raise ConfigEntryAuthFailed(translation_domain=DOMAIN, translation_key="auth_failed") from err

@@ -35,6 +35,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
+from .compat import schema as make_schema
 from .api import AuthenticationError, FamilyHub, RateLimitError
 from .auth import AuthError, SmartThingsOAuth, refresh_samsung_iot_token
 from .const import (
@@ -69,7 +70,7 @@ PLATFORMS: list[Platform] = [Platform.CAMERA, Platform.SENSOR]
 SERVICE_REFRESH = "refresh"
 SERVICE_REFRESH_FOOD = "refresh_food_inventory"
 ATTR_CONFIG_ENTRY_ID = "config_entry_id"
-SERVICE_SCHEMA = vol.Schema({vol.Optional(ATTR_CONFIG_ENTRY_ID): str})
+SERVICE_SCHEMA = make_schema({vol.Optional(ATTR_CONFIG_ENTRY_ID): str})
 
 CACHE_DIR = ".storage/samsung_familyhub/food_circles"
 LEGACY_CACHE_DIR = "www/samsung_familyhub/food_circles"
@@ -223,7 +224,7 @@ async def _build_pat_hub(
         token, expiry = found.token, found.next_rotation_at
     elif token:
         _LOGGER.info("Loaded active tokens from the rotator on startup")
-    token = token or entry.data.get(CONF_TOKEN)
+    token = token or str(entry.data.get(CONF_TOKEN) or "")
     if not token:
         raise ConfigEntryNotReady(translation_domain=DOMAIN, translation_key="no_token")
     if entry.data.get(CONF_TOKEN) != token:

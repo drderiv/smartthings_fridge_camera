@@ -23,6 +23,7 @@ from .auth import (
     SamsungAccountAuth,
     SmartThingsOAuth,
 )
+from .compat import schema as make_schema
 from .const import (
     AUTH_MODE_PAT,
     AUTH_MODE_STANDALONE_OAUTH,
@@ -53,19 +54,19 @@ from .rotator import RotatorClient, entry_value
 
 _LOGGER = logging.getLogger(__name__)
 
-STEP_PAT_DATA_SCHEMA = vol.Schema(
+STEP_PAT_DATA_SCHEMA = make_schema(
     {
         vol.Required(CONF_TOKEN): str,
         vol.Optional(CONF_DEVICE_ID): str,
     }
 )
-CREDENTIALS_SCHEMA = vol.Schema(
+CREDENTIALS_SCHEMA = make_schema(
     {
         vol.Required(CONF_OAUTH_CLIENT_ID): str,
         vol.Required(CONF_OAUTH_CLIENT_SECRET): str,
     }
 )
-CODE_SCHEMA = vol.Schema({"redirect_url_or_code": str})
+CODE_SCHEMA = make_schema({"redirect_url_or_code": str})
 FIELD_REDIRECT = "redirect_url_or_code"
 
 
@@ -249,7 +250,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
             if not errors:
                 return self.async_create_entry(title="Samsung Fridge Camera (Standalone OAuth)", data=data)
 
-        schema = vol.Schema(
+        schema = make_schema(
             {
                 vol.Optional("samsung_email"): str,
                 vol.Optional("samsung_password"): str,
@@ -337,7 +338,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
 
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=vol.Schema({vol.Required(CONF_TOKEN): str}),
+            data_schema=make_schema({vol.Required(CONF_TOKEN): str}),
             errors=errors,
         )
 
@@ -413,7 +414,7 @@ class SamsungFamilyHubOptionsFlow(config_entries.OptionsFlow):
             if CONF_ENABLE_BOTTOM_CAMERA in entry.options
             else entry.data.get(CONF_ENABLE_BOTTOM_CAMERA, DEFAULT_ENABLE_BOTTOM_CAMERA)
         )
-        schema = vol.Schema(
+        schema = make_schema(
             {
                 vol.Optional(CONF_ROTATOR_URL, default=entry_value(entry, CONF_ROTATOR_URL, DEFAULT_ROTATOR_URL)): str,
                 vol.Optional(CONF_ROTATOR_API_KEY, default=entry_value(entry, CONF_ROTATOR_API_KEY, "")): str,
