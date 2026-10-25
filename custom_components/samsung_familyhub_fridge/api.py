@@ -224,7 +224,7 @@ class FamilyHub:
         return None
 
     async def update_camera(self) -> None:
-        """Send the reverse-engineered refresh command to the fridge.
+        """Send the refresh command to the fridge.
 
         The single OCF resource at /udo/contents/provider/vs/0 holds all of the camera
         images; the coordinator sends this on door-close events.
