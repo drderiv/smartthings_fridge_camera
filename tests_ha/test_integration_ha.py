@@ -94,7 +94,8 @@ async def test_only_option_changes_reload_the_entry(hass, mock_entry, aioclient_
     await hass.async_block_till_done()
     assert mock_entry.runtime_data is first_runtime                       # token write: no reload
 
-    hass.config_entries.async_update_entry(mock_entry, options={"poll_interval": 120})
+    flow = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    await hass.config_entries.options.async_configure(flow["flow_id"], {"poll_interval": 120})
     await hass.async_block_till_done()
     assert mock_entry.runtime_data is not first_runtime                   # option change: reloaded
     assert mock_entry.runtime_data.coordinator.update_interval.total_seconds() == 120

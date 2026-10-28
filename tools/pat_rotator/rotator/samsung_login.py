@@ -75,6 +75,12 @@ AGREE_ALL = (
     "input#agreeAll", "input[name='agreeAll']",
     "label:has-text('Agree to all')", "label:has-text('I agree to all')",
 )
+# "Samsung account policies updated": only the required row is ticked; the "(optional)" rows
+# (customization, marketing offers, "All") are never touched. Agree itself is in CONSENT_BUTTONS.
+REQUIRED_TERMS = (
+    "label:has-text('Samsung Service Terms and Conditions')",
+    "text=/^\\s*Samsung Service Terms and Conditions\\s*$/",
+)
 # Optional screens (password reminders, promos) that are safe to postpone.
 POSTPONE_BUTTONS = (
     "button[data-log-id='not-now']", "button:has-text('Not now')", "a:has-text('Not now')",
@@ -133,6 +139,14 @@ def captcha_visible(page: Page) -> bool:
     return first_visible(scopes(page), CAPTCHA_ELEMENTS) is not None
 
 
+def terms_update_page(page: Page) -> bool:
+    """True on Samsung's "account policies updated" screen, which a person must accept."""
+    try:
+        return "/sign-in/status/terms" in page.url
+    except PlaywrightError:
+        return False
+
+
 def needs_verification(page: Page) -> bool:
     """True if a 2FA code field or verification prompt is actually showing."""
     return first_visible(scopes(page), (*CODE_FIELDS, VERIFICATION_TEXT)) is not None
@@ -155,6 +169,7 @@ def sign_in(
     interactive: bool | None = None,
     prompt: Prompt = input,
     headless: bool = True,
+    accept_terms: bool = False,
 ) -> None:
     """Drive the Samsung sign-in form until ``signed_in()`` is true.
 
@@ -178,6 +193,17 @@ def sign_in(
             return
         if captcha_visible(page) and not interactive:
             raise InteractiveAuthRequired("Samsung presented a CAPTCHA")
+        if terms_update_page(page):
+            if accept_terms:
+                if click_first_visible(scopes(page), REQUIRED_TERMS):
+                    _LOGGER.warning(
+                        "accept_samsung_policy_updates is on: accepting Samsung's required terms"
+                    )
+            elif headless:
+                raise InteractiveAuthRequired(
+                    "Samsung wants its updated terms accepted (run generate_pat.py --no-headless "
+                    "and accept them once, or set accept_samsung_policy_updates in config.json)"
+                )
         if not verified and needs_verification(page):
             if not interactive:
                 raise InteractiveAuthRequired("two-factor verification required")

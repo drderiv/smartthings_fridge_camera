@@ -276,3 +276,16 @@ def test_periodic_check_logs_only_changes_and_survives_errors(caplog):
     messages = [r.getMessage() for r in caplog.records if r.name == "rotator.scheduler"]
     assert messages == ["Session: OK", "Session: NOT OK", "Session: check failed: chromium crashed", "Session: OK"]
     assert stop.waits == [60] * 6
+
+
+def test_accept_policy_updates_defaults_off_and_must_be_literally_true(tmp_path):
+    from tools.pat_rotator.rotator.config import Config
+
+    def load(extra):
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps({"samsung_email": "a@b.c", "samsung_password": "x", **extra}))
+        return Config.from_file(path)
+
+    assert load({}).accept_policy_updates is False
+    assert load({"accept_samsung_policy_updates": "yes"}).accept_policy_updates is False
+    assert load({"accept_samsung_policy_updates": True}).accept_policy_updates is True

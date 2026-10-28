@@ -23,7 +23,7 @@ from .auth import (
     SamsungAccountAuth,
     SmartThingsOAuth,
 )
-from .compat import schema as make_schema
+from .compat import OptionsFlowBase, schema as make_schema
 from .const import (
     AUTH_MODE_PAT,
     AUTH_MODE_STANDALONE_OAUTH,
@@ -401,7 +401,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         )
 
 
-class SamsungFamilyHubOptionsFlow(config_entries.OptionsFlow):
+class SamsungFamilyHubOptionsFlow(OptionsFlowBase):
     """Options: rotator, location, polling and optional cameras."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
