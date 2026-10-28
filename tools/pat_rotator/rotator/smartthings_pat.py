@@ -44,6 +44,7 @@ def generate_pat(
     token_name: str = "ha-fridge-camera",
     two_factor_method: str = "device",
     headless: bool = True,
+    accept_terms: bool = False,
     prompt: Prompt = input,
 ) -> str:
     """Return a fresh PAT (also written to ``output_file``)."""
@@ -65,6 +66,7 @@ def generate_pat(
                 sign_in(
                     page, email=email, password=password, signed_in=on_tokens_page,
                     method=two_factor_method, prompt=prompt, headless=headless,
+                    accept_terms=accept_terms,
                 )
                 page.wait_for_selector(GENERATE_BUTTON, timeout=45_000)
                 save_session(context, session_file)

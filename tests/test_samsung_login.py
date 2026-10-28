@@ -73,6 +73,35 @@ def test_visible_verification_stops_unattended_logins(env):
         run(page, lambda: False)
 
 
+def test_terms_update_page_stops_headless_logins_with_instructions(env):
+    page, _, _ = env
+    page.url = "https://account.samsung.com/iam/sign-in/status/terms"
+    with pytest.raises(InteractiveAuthRequired, match="--no-headless"):
+        run(page, lambda: False)
+
+
+def test_terms_update_page_is_accepted_when_the_config_allows_it(env):
+    page, _, monkeypatch = env
+    page.url = "https://account.samsung.com/iam/sign-in/status/terms"
+    clicked = []
+
+    def click(targets, selectors):
+        clicked.append(selectors)
+        return True
+
+    monkeypatch.setattr(login, "click_first_visible", click)
+    run(page, lambda: page.polls >= 2, accept_terms=True)
+    assert login.REQUIRED_TERMS in clicked
+    assert all("optional" not in sel.lower() for sel in login.REQUIRED_TERMS)
+
+
+def test_terms_update_page_is_left_to_a_visible_browser(env):
+    page, _, _ = env
+    page.url = "https://account.samsung.com/iam/sign-in/status/terms"
+    run(page, lambda: page.polls >= 3, headless=False)   # the person accepts it in the window
+    assert page.polls == 3
+
+
 def test_interactive_verification_is_handed_to_the_user(env):
     page, _, monkeypatch = env
     seen = {}

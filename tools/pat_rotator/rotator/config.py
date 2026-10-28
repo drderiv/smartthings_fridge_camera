@@ -32,6 +32,7 @@ class Config:
     kics_refresh_token: str = ""
     headless: bool = True
     session_keepalive_minutes: float = 0
+    accept_policy_updates: bool = False
 
     @property
     def pat_interval_s(self) -> float:
@@ -79,6 +80,7 @@ class Config:
                 kics_refresh_token=str(raw.get("kics_refresh_token") or "").strip(),
                 headless=bool(raw.get("headless", True)),
                 session_keepalive_minutes=float(raw.get("session_keepalive_minutes", 0)),
+                accept_policy_updates=raw.get("accept_samsung_policy_updates") is True,
             )
         except (TypeError, ValueError) as err:
             raise ConfigError(f"Invalid value in {path}: {err}") from err

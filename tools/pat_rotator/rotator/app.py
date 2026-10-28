@@ -40,6 +40,7 @@ def build_jobs(cfg: Config, paths: Paths) -> list[Job]:
             lambda: smartthings_pat.generate_pat(
                 cfg.email, cfg.password, paths.pat, paths.session,
                 two_factor_method=cfg.two_factor_method, headless=cfg.headless,
+                accept_terms=cfg.accept_policy_updates,
             ),
         ),
         Job(
@@ -71,6 +72,15 @@ def serve(paths: Paths | None = None) -> int:
         _LOGGER.warning(
             "%s is readable by other users and contains your Samsung password. Run: chmod 600 %s",
             paths.config, paths.config,
+        )
+
+    if cfg.accept_policy_updates:
+        _LOGGER.warning(
+            "WARNING: 'accept_samsung_policy_updates' is enabled. When Samsung shows an updated "
+            "Terms and Conditions page, this program will accept the required terms on your "
+            "behalf, without you reading them. Optional items (marketing, customization) are "
+            "never accepted. You are responsible for the account's agreements; remove the "
+            "setting to review updates yourself."
         )
 
     stop = threading.Event()

@@ -224,6 +224,8 @@ For Samsung Family Hub refrigerators equipped with internal food cameras and AI 
   - **Samsung Food Token** (every 28 days)
   - **KICS Live Food Circles Token** (every 23 hours via OAuth rolling refresh)
   
+  **Samsung policy updates:** now and then Samsung shows a "Samsung account policies updated" page after sign-in. The rotator can't pass it on its own: it stops, logs what it needs, and pauses until you run `.venv/bin/python generate_pat.py --no-headless` and accept the terms once. If you would rather it did that for you, add `"accept_samsung_policy_updates": true` to the rotator's `config.json`. It then accepts the *required* terms (never the optional marketing or customization items) on your behalf, without you reading them, and prints a warning at every start-up. Off by default.
+
   **No Android emulator, rooting, or packet sniffing is required!** All tokens and refrigerator location data are served to Home Assistant over local REST endpoints.
 
 * **Home Assistant Configuration & Options Flow**:

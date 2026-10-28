@@ -35,7 +35,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
-from .compat import schema as make_schema
+from .compat import OPTIONS_FLOW_RELOADS, schema as make_schema
 from .api import AuthenticationError, FamilyHub, RateLimitError
 from .auth import AuthError, SmartThingsOAuth, refresh_samsung_iot_token
 from .const import (
@@ -204,7 +204,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: FridgeConfigEntry) -> bo
         entry.async_on_unload(coordinator.food_coordinator.async_shutdown)
 
     entry.runtime_data = FridgeRuntimeData(hub=hub, coordinator=coordinator, loaded_options=dict(entry.options))
-    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    if not OPTIONS_FLOW_RELOADS:
+        entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

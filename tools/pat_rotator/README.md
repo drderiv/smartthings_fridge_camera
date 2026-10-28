@@ -41,6 +41,7 @@ Edit `config.json`:
 | `*_interval_*` | Rotation intervals. Defaults suit the token lifetimes above. |
 | `headless` | `true` (default) runs the browser without a window. Samsung is more likely to show a CAPTCHA to a headless browser; set `false` and start the service under a virtual display (`sudo apt install xvfb`, then `xvfb-run -a .venv/bin/python main.py`) to make it behave like a normal browser. |
 | `session_keepalive_minutes` | `0` (default) is off. A positive number makes the rotator check the saved SmartThings session that often (no password, no PAT created), which keeps an idle-timeout session alive and logs a warning as soon as it is no longer signed in, long before the PAT expires. |
+| `accept_samsung_policy_updates` | `false` (default). When Samsung shows an updated Terms and Conditions page the rotator stops and asks you to accept it once (`generate_pat.py --no-headless`). Set `true` to have it tick the *required* terms row and press Agree itself; optional items (customization, marketing) are never accepted. **This accepts legal terms on your behalf without you reading them**, so the service prints a warning at every start-up. |
 | `location_id` | Optional. Your fridge's SmartThings location ID, served at `/location_id`. Edits apply without a restart. |
 | `kics_refresh_token` | Optional. Seeds the KICS refresh token if you already have one. |
 

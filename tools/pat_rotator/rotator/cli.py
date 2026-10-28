@@ -41,6 +41,7 @@ def pat_main(argv: list[str] | None = None) -> int:
         token = generate_pat(
             cfg.email, cfg.password, resolve(args.output, paths.base), resolve(args.session, paths.base),
             two_factor_method=args.method or cfg.two_factor_method, headless=not args.no_headless,
+            accept_terms=cfg.accept_policy_updates,
         )
     except Exception as err:  # noqa: BLE001 - CLI boundary: report and exit non-zero
         logging.getLogger("rotator").error("%s", err)
