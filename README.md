@@ -21,6 +21,16 @@ When it comes to the installation, you have two options:
 
 ## Option 1: Install via HACS
 
+This integration is in the default HACS repository list, so you can find it directly:
+
+1. Open **HACS** in Home Assistant and search for **Samsung FamilyHub** (or "Family Hub Fridge").
+2. Open the entry, click **Download**, and confirm the latest version.
+3. Restart Home Assistant (see below), then add the integration under **Settings → Devices & Services**.
+
+### If the search doesn't find it
+
+A newly listed repository can take several hours to appear, and very old HACS versions may not list it. In that case add it as a custom repository.
+
 First, navigate to the HACS tab on your Home Assistant instance. On this page, click the three dots in the top right corner and select "Custom repositories":
 <p float="left">
   <img src="assets/install/install-step-1.png" width=1200  alt="install-step-1"/>
@@ -192,7 +202,7 @@ The integration polls the SmartThings cloud (no local connection to the fridge).
 ## Supported devices and limitations
 
 * Samsung Family Hub refrigerators with interior cameras, reached through SmartThings. The food inventory and food circles need a model with AI Food Manager.
-* **The food inventory is limited to 32 items, and it appears to be the 32 oldest.** That is what Samsung's cloud returns, and it matches the limit in the SmartThings mobile app, so a fridge holding more (the door display can show more) lists only 32 here, and the newest items may be missing. The integration puts no limit of its own on the list: if Samsung ever raises theirs, more items will simply appear. For reference, each item takes roughly 160 to 200 bytes, so about **80 to 100 items** would reach Home Assistant's 16 KB limit on stored state attributes. That limit would only matter for the history database, and v2.0.0 keeps the `items` list out of the database, so a longer list would still work.
+* **The food inventory is limited to 32 items, and it appears to be the 32 oldest.** That is what Samsung's cloud returns, and it matches the limit in the SmartThings mobile app, so a fridge holding more (the door display can show more) lists only 32 here, and the newest items may be missing. The integration puts no limit of its own on the list: if Samsung ever raises theirs, more items will simply appear. For reference, each item takes roughly 450 to 500 bytes (the signed image link alone is about 360 characters), so 32 items come to about 15 KB and **about 35 items** would pass Home Assistant's 16 KB limit on stored state attributes. That limit only matters for the history database, and the `items` list is kept out of the database, so a longer list would still work; but the link format would then deserve a rethink (the project's notes flag this).
 * A PAT lasts 24 hours, so without the token rotator the cameras stop until you re-authenticate.
 * The rotator signs in to your Samsung account with a browser; Samsung can change its pages or ask for 2FA/CAPTCHA at any time (the rotator pauses and logs when that happens).
 * **SmartThings API pricing (Samsung's announcement, effective 2026-11-04).** Samsung is moving the cloud API to paid plans. The announced deadline of 2026-12-15 applies to *API Access Apps*: OAuth apps that a developer registers. That makes **Standalone OAuth mode** (your own SmartThings app) subject to Samsung's paid Developer Plan after that date. Personal access tokens are not apps and Samsung has not said they will be charged or switched off, but its documentation calls them intended for temporary testing and lightweight scripts, so PAT access could change in future. Check Samsung's [announcement](https://blog.smartthings.com/smartthings-updates/smartthings-api-additional-details-for-developers-and-business-partners/) for the current terms.

@@ -1,6 +1,9 @@
 """The integration inside a real Home Assistant: setup, entities, services, views, flows."""
 from __future__ import annotations
 
+from datetime import timedelta
+
+from homeassistant.components.http.auth import async_sign_path
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import device_registry as dr
@@ -13,7 +16,7 @@ from pytest_homeassistant_custom_component.components.diagnostics import (
 )
 
 from custom_components.samsung_familyhub_fridge.const import DOMAIN
-from custom_components.samsung_familyhub_fridge.views import generate_food_circle_sig
+from custom_components.samsung_familyhub_fridge.food import FoodImageCache
 
 from .conftest import COMMANDS_URL, DEVICE_ID, DEVICE_LIST_URL, JPEG, STATUS_URL, mock_smartthings
 
@@ -68,7 +71,7 @@ async def test_food_inventory_sensor_loads_with_signed_image_links(hass, mock_en
     state = hass.states.get("sensor.family_hub_food_inventory")
     assert state.state == "1"
     image_url = state.attributes["items"][0]["image_url"]
-    assert image_url.startswith("/api/samsung_familyhub/food_circles/") and "?sig=" in image_url
+    assert image_url.startswith("/api/samsung_familyhub/food_circles/") and "?authSig=" in image_url
 
 
 # --- unload / reload ----------------------------------------------------------------
@@ -199,22 +202,28 @@ async def test_diagnostics_redact_credentials(hass, hass_client, mock_entry, aio
 async def test_food_circle_view_authentication(hass, hass_client, hass_client_no_auth, mock_entry, aioclient_mock):
     mock_smartthings(aioclient_mock)
     await setup_entry(hass, mock_entry)
-    shared = hass.data[DOMAIN]
     name = "abcdef0123_01234567.jpg"
-    (shared["cache_dir"] / name).write_bytes(JPEG)
-    sig = generate_food_circle_sig(shared["view_secret"], name)
+    (hass.data[DOMAIN]["cache_dir"] / name).write_bytes(JPEG)
     base = f"/api/samsung_familyhub/food_circles/{name}"
+    images = FoodImageCache(hass.data[DOMAIN]["cache_dir"], hass)
+    signed = images.sign(base)
 
     anonymous = await hass_client_no_auth()
-    assert (await anonymous.get(f"{base}?sig={sig}")).status == 200          # signed link, no login
+    assert (await anonymous.get(signed)).status == 200                       # signed link, no login
     assert (await anonymous.get(base)).status == 401                         # no signature
-    assert (await anonymous.get(f"{base}?authSig=anything")).status == 401   # the old bypass
-    assert (await anonymous.get(f"{base}?sig=0000000000000000")).status == 401
-    assert (await anonymous.get(f"{base}?sig=éééééééééééééééé")).status == 401
-    assert (await anonymous.get("/api/samsung_familyhub/food_circles/..%2f..%2fsecret")).status in (400, 404)
+    assert (await anonymous.get(f"{base}?authSig=anything")).status == 401   # not a valid signature
+    assert (await anonymous.get(f"{base}?sig=0000000000000000")).status == 401  # v2.0.0 links are gone
+    assert (await anonymous.get(signed[:-3] + "xyz")).status == 401          # altered signature
+    other = images.sign(base.replace("abcdef0123", "ffffffffff"))
+    assert (await anonymous.get(f"{base}?" + other.split("?")[1])).status == 401  # another image's link
+    assert (await anonymous.get(signed + "&x=1")).status == 401              # altered query
+    assert (await anonymous.get("/api/samsung_familyhub/food_circles/..%2f..%2fsecret")).status in (400, 401, 404)
+
+    expired = async_sign_path(hass, base, timedelta(seconds=-10), use_content_user=True)
+    assert (await anonymous.get(expired)).status == 401                      # links expire
 
     logged_in = await hass_client()
-    assert (await logged_in.get(base)).status == 200                         # a logged-in user needs no sig
+    assert (await logged_in.get(base)).status == 200                         # a logged-in user needs no link
 
 
 # --- config flow ----------------------------------------------------------------------------

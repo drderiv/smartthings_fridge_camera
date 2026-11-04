@@ -40,28 +40,28 @@ def test_split_bearer_and_timestamp_helpers():
 # --- image cache disk behaviour -------------------------------------------------------------
 
 def test_cache_survives_missing_directory_and_unwritable_files(tmp_path):
-    cache = FoodImageCache(tmp_path / "missing", "secret")
+    cache = FoodImageCache(tmp_path / "missing")
     assert cache.cached_names() == set()                  # no directory yet
     assert cache.load_inventory() is None                 # no inventory.json
-    assert cache.url("a.jpg").endswith("a.jpg?sig=" + cache.url("a.jpg").split("sig=")[1])
-    assert FoodImageCache(tmp_path, "").url("a.jpg") == "/api/samsung_familyhub/food_circles/a.jpg"
+    assert cache.path("a.jpg") == "/api/samsung_familyhub/food_circles/a.jpg"
+    assert cache.sign(cache.path("a.jpg")) == cache.path("a.jpg")     # no hass: plain path
 
     blocker = tmp_path / "file-not-dir"
     blocker.write_text("x")
-    assert FoodImageCache(blocker / "sub", "s").ensure_directory() is False
+    assert FoodImageCache(blocker / "sub").ensure_directory() is False
 
 
 def test_cache_store_tolerates_os_errors(tmp_path):
-    cache = FoodImageCache(tmp_path, "s")
+    cache = FoodImageCache(tmp_path)
     (tmp_path / "inventory.json").mkdir()                 # a directory where the file should be
     cache.store({"new_00000000.jpg": JPEG}, set(), {"total_items": 0, "last_synced": None, "items": []})
     assert (tmp_path / "new_00000000.jpg").read_bytes() == JPEG
     (tmp_path / "bad.json").write_text("not json")
-    assert FoodImageCache(tmp_path / "nowhere", "s").load_inventory() is None
+    assert FoodImageCache(tmp_path / "nowhere").load_inventory() is None
 
 
 def test_cache_prune_failure_is_ignored(tmp_path, monkeypatch):
-    cache = FoodImageCache(tmp_path, "s")
+    cache = FoodImageCache(tmp_path)
     (tmp_path / "stale_00000000.jpg").write_bytes(JPEG)
     monkeypatch.setattr(Path, "unlink", lambda self, *a, **k: (_ for _ in ()).throw(OSError("busy")))
     cache.store({}, set(), None)                          # must not raise
@@ -270,3 +270,59 @@ async def test_food_coordinator_maps_network_errors_and_debounces_door_close(has
     for coro in created:
         coro.close()
     await coordinator.async_shutdown()
+
+
+# --- signed image links ---------------------------------------------------------------------
+
+def _signing_cache(monkeypatch, tmp_path):
+    from datetime import timedelta
+    from custom_components.samsung_familyhub_fridge import food
+
+    calls = []
+
+    def fake_sign(hass, path, expiration, **kwargs):
+        calls.append((path, expiration, kwargs))
+        return f"{path}?authSig=sig{len(calls)}"
+
+    now = {"t": 1_000_000.0}
+    monkeypatch.setattr(food, "async_sign_path", fake_sign)
+    monkeypatch.setattr(food.time, "time", lambda: now["t"])
+    return FoodImageCache(tmp_path, object()), calls, now, timedelta
+
+
+def test_links_are_signed_for_24_hours_and_resigned_after_12(monkeypatch, tmp_path):
+    cache, calls, now, timedelta = _signing_cache(monkeypatch, tmp_path)
+    path = cache.path("a.jpg")
+
+    first = cache.sign(path)
+    assert calls == [(path, timedelta(hours=24), {"use_content_user": True})]
+    now["t"] += 11 * 3600
+    assert cache.sign(path) == first and len(calls) == 1          # stable while fresh: no state churn
+    now["t"] += 2 * 3600                                          # 13 h old
+    assert cache.sign(path) != first and len(calls) == 2
+
+
+def test_sign_inventory_signs_a_copy_and_leaves_other_urls_alone(monkeypatch, tmp_path):
+    cache, calls, _, _ = _signing_cache(monkeypatch, tmp_path)
+    stored = {"total_items": 3, "last_synced": "t", "items": [
+        {"name": "Milk", "image_url": cache.path("a.jpg")},
+        {"name": "Old", "image_url": cache.path("b.jpg") + "?sig=0123456789abcdef"},   # v2.0.0 link on disk
+        {"name": "Apples", "image_url": "https://whisk.test/apple.jpg"},
+        {"name": "Plain", "image_url": None},
+    ]}
+
+    signed = cache.sign_inventory(stored)
+
+    assert [i["image_url"] for i in signed["items"]] == [
+        cache.path("a.jpg") + "?authSig=sig1", cache.path("b.jpg") + "?authSig=sig2",
+        "https://whisk.test/apple.jpg", None,
+    ]
+    assert stored["items"][0]["image_url"] == cache.path("a.jpg")  # the stored inventory is untouched
+    assert signed["total_items"] == 3
+
+
+def test_signed_links_of_removed_items_are_forgotten(monkeypatch, tmp_path):
+    cache, calls, _, _ = _signing_cache(monkeypatch, tmp_path)
+    cache.sign_inventory({"items": [{"image_url": cache.path("a.jpg")}, {"image_url": cache.path("b.jpg")}]})
+    cache.sign_inventory({"items": [{"image_url": cache.path("a.jpg")}]})
+    assert set(cache._signed) == {cache.path("a.jpg")}

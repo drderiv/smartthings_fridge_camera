@@ -134,7 +134,7 @@ async def test_services_registered_in_async_setup_and_raise_translated_errors(tm
     registered = {call.args[1]: call.args[2] for call in hass.services.async_register.call_args_list}
     assert set(registered) == {"refresh", "refresh_food_inventory"}
     assert (tmp_path / ".storage/samsung_familyhub/food_circles").is_dir()
-    assert len(hass.data[DOMAIN]["view_secret"]) == 64          # random per installation
+    assert "view_secret" not in hass.data[DOMAIN]               # Home Assistant signs the links now
 
     # refresh: auth problems become a translated validation error and the flag is untouched
     entry = loaded_entry("a")

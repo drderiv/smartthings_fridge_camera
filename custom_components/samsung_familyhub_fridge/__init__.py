@@ -14,7 +14,6 @@ Entries created before auth modes existed (``{token, device_id}``) are migrated 
 from __future__ import annotations
 
 import logging
-import secrets
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,13 +97,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     legacy_dir = Path(hass.config.path(LEGACY_CACHE_DIR))
     await hass.async_add_executor_job(_prepare_cache_dir, cache_dir, legacy_dir)
 
-    secret_store: Store[dict[str, str]] = Store(hass, 1, f"{DOMAIN}.view_secret")
-    stored = await secret_store.async_load()
-    if not stored or not stored.get("secret"):
-        stored = {"secret": secrets.token_hex(32)}
-        await secret_store.async_save(stored)
-    hass.data[DOMAIN] = {"view_secret": stored["secret"], "cache_dir": cache_dir}
-    hass.http.register_view(FamilyHubFoodCircleView(str(cache_dir), secret=stored["secret"]))
+    await Store(hass, 1, f"{DOMAIN}.view_secret").async_remove()  # v2.0.0's own signing key, now unused
+    hass.data[DOMAIN] = {"cache_dir": cache_dir}
+    hass.http.register_view(FamilyHubFoodCircleView(str(cache_dir)))
 
     async def _async_refresh(call: ServiceCall) -> None:
         for entry in _target_entries(hass, call):
@@ -307,7 +302,6 @@ async def _async_setup_food(
         session,
         rotator,
         cache_dir=shared.get("cache_dir") or Path(hass.config.path(CACHE_DIR)),
-        view_secret=shared.get("view_secret", ""),
         token=entry.data.get(CONF_FOOD_TOKEN) or entry.data.get(CONF_KICS_TOKEN),
         location_id=entry_value(entry, CONF_LOCATION_ID),
         location_lookup=hub.get_location_id,
