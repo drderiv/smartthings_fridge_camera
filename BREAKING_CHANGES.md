@@ -93,3 +93,9 @@ Other changes:
 ## Log hygiene
 
 - Debug-level details only: location IDs are no longer logged at INFO; response bodies are no longer included in warnings/exception messages.
+
+## Changes in v2.0.2
+
+- **Image links are signed by Home Assistant and expire.** The food-circle links in the inventory sensor's `items` now use Home Assistant's own signed paths (`?authSig=...`, valid 24 hours, re-signed about every 12 hours and after each restart) instead of the `?sig=` HMAC of v2.0.0, which never expired. Old `?sig=` links stop working at the first food sync after the update (seconds to ten minutes); dashboards that read the links from the sensor attribute need no change. A link is about 360 characters instead of about 80. The integration's own signing key (`.storage/samsung_familyhub_fridge.view_secret`) is deleted.
+- **Image view requires authentication through Home Assistant**: a logged-in request or a valid, unexpired signed link.
+

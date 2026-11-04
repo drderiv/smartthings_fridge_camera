@@ -1,6 +1,7 @@
 """Food client (KICS EPA / Whisk), image cache and PAT pickup by the polling coordinator."""
 from __future__ import annotations
 
+import json
 import time
 from unittest.mock import MagicMock
 
@@ -78,7 +79,7 @@ async def test_fetches_kics_food_circles_with_expected_headers(make_client, mock
 
 async def test_crops_are_cached_locally_signed_pruned_and_inventory_saved(make_client, mocked, tmp_path):
     client = make_client(token="test_kics_token", location_id="loc")
-    client._images = FoodImageCache(tmp_path / "circles", "secret-123")
+    client._images = FoodImageCache(tmp_path / "circles", client.hass)
     (tmp_path / "circles").mkdir()
     stale = tmp_path / "circles" / "stale_00000000.jpg"
     stale.write_bytes(JPEG)
@@ -91,7 +92,11 @@ async def test_crops_are_cached_locally_signed_pruned_and_inventory_saved(make_c
 
     name = FoodImageCache.filename("item-1", "https://s3.test/milk.jpg?X-Amz=1")
     url = result["items"][0]["image_url"]
-    assert url.startswith(f"/api/samsung_familyhub/food_circles/{name}?sig=") and len(url.split("sig=")[1]) == 16
+    assert url == f"/api/samsung_familyhub/food_circles/{name}"                            # stored unsigned
+    signed = client._images.sign_inventory(result)["items"][0]["image_url"]
+    assert signed == f"/api/samsung_familyhub/food_circles/{name}?authSig=mockSignature"   # signed for the caller
+    saved = json.loads((tmp_path / "circles" / "inventory.json").read_text())
+    assert saved["items"][0]["image_url"] == f"/api/samsung_familyhub/food_circles/{name}"  # stored unsigned
     assert (tmp_path / "circles" / name).read_bytes() == JPEG
     assert not stale.exists()                                   # no longer in the inventory
     assert (tmp_path / "circles" / "inventory.json").exists()   # restored after a restart

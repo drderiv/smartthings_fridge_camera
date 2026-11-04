@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import aiohttp
+from homeassistant.components.http.auth import async_sign_path
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -26,7 +27,6 @@ from .const import (
 )
 from .models import FoodItem, Inventory
 from .rotator import RotatorClient
-from .views import generate_food_circle_sig
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,6 +44,12 @@ WHISK_MIN_TOKEN_LENGTH = 35
 MIN_IMAGE_BYTES = 100
 TIMESTAMP_MS_THRESHOLD = 10_000_000_000
 IMAGE_URL_PATH = "/api/samsung_familyhub/food_circles"
+# Image links are signed by Home Assistant and expire. They are re-signed once half the lifetime
+# has passed, so an unchanged inventory keeps stable links (no state churn, no image reloads).
+# A signed link is ~360 characters; if Samsung ever returns more than 32 items, revisit this
+# scheme, because the item list grows by that much per item.
+LINK_LIFETIME = timedelta(hours=24)
+LINK_RESIGN_AFTER = LINK_LIFETIME / 2
 EMPTY_INVENTORY: Inventory = {"total_items": 0, "last_synced": None, "items": []}
 
 
@@ -68,9 +74,10 @@ class FoodImageCache:
     The methods touch the file system, so call them from an executor job.
     """
 
-    def __init__(self, directory: Path, view_secret: str) -> None:
+    def __init__(self, directory: Path, hass: HomeAssistant | None = None) -> None:
         self.directory = directory
-        self._secret = view_secret
+        self._hass = hass
+        self._signed: dict[str, tuple[str, float]] = {}  # path -> (signed link, time signed)
 
     @staticmethod
     def filename(item_id: str, remote_url: str) -> str:
@@ -78,9 +85,39 @@ class FoodImageCache:
         url_hash = hashlib.md5(remote_url.split("?")[0].encode(), usedforsecurity=False).hexdigest()[:8]
         return f"{id_hash}_{url_hash}.jpg"
 
-    def url(self, filename: str) -> str:
-        sig = generate_food_circle_sig(self._secret, filename) if self._secret else ""
-        return f"{IMAGE_URL_PATH}/{filename}" + (f"?sig={sig}" if sig else "")
+    @staticmethod
+    def path(filename: str) -> str:
+        return f"{IMAGE_URL_PATH}/{filename}"
+
+    def sign(self, path: str) -> str:
+        """A link to ``path`` that works without a login until it expires (cached while fresh)."""
+        now = time.time()
+        link, signed_at = self._signed.get(path, ("", 0.0))
+        if not link or now - signed_at >= LINK_RESIGN_AFTER.total_seconds():
+            if self._hass is None:
+                return path
+            link = async_sign_path(self._hass, path, LINK_LIFETIME, use_content_user=True)
+            self._signed[path] = (link, now)
+        return link
+
+    def sign_inventory(self, inventory: Inventory) -> Inventory:
+        """A copy of the inventory whose cached-image links are signed.
+
+        The stored inventory keeps plain paths: a signature is only good until it expires, and
+        not at all after a Home Assistant restart.
+        """
+        items: list[FoodItem] = []
+        used: set[str] = set()
+        for item in inventory.get("items", []):
+            url = item.get("image_url") or ""
+            if url.startswith(IMAGE_URL_PATH + "/"):
+                path = url.split("?", 1)[0]
+                used.add(path)
+                item = {**item, "image_url": self.sign(path)}
+            items.append(item)
+        for path in set(self._signed) - used:
+            del self._signed[path]
+        return cast(Inventory, {**inventory, "items": items})
 
     def ensure_directory(self) -> bool:
         try:
@@ -136,7 +173,6 @@ class SamsungFoodClient:
         rotator: RotatorClient,
         *,
         cache_dir: Path,
-        view_secret: str = "",
         token: str | None = None,
         location_id: str | None = None,
         location_lookup: Callable[[], Awaitable[str | None]] | None = None,
@@ -144,7 +180,7 @@ class SamsungFoodClient:
         self.hass = hass
         self._session = session
         self._rotator = rotator
-        self._images = FoodImageCache(cache_dir, view_secret)
+        self._images = FoodImageCache(cache_dir, hass)
         self._configured_token = token
         self._location_id = location_id
         self._location_lookup = location_lookup
@@ -358,7 +394,7 @@ class SamsungFoodClient:
         parsed: list[FoodItem] = []
         for entry, filename in entries:
             if filename and filename in available:
-                entry["image_url"] = self._images.url(filename)
+                entry["image_url"] = self._images.path(filename)
             parsed.append(entry)
         return parsed, (downloaded if caching else {}), (keep & available if caching else set())
 
@@ -500,9 +536,9 @@ class SamsungFoodClient:
         if not token:
             if self._cached_inventory is None:
                 await self._async_load_cached_inventory()
-            return self._cached_inventory or Inventory(**EMPTY_INVENTORY)
+            return self._images.sign_inventory(self._cached_inventory or Inventory(**EMPTY_INVENTORY))
         try:
-            return await self._async_fetch_food_items(token)
+            return self._images.sign_inventory(await self._async_fetch_food_items(token))
         finally:
             await self._async_persist_cache()
 

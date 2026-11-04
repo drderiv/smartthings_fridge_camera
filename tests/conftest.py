@@ -456,6 +456,9 @@ class _Store:
     async def async_save(self, data):
         self._data = data
 
+    async def async_remove(self):
+        self._data = None
+
 
 ha_helpers_storage = _make_module("homeassistant.helpers.storage", Store=_Store)
 
