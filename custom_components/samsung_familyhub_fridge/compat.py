@@ -1,7 +1,7 @@
 """Small helpers that keep type checking stable across Home Assistant releases."""
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
 from homeassistant import config_entries
@@ -9,7 +9,10 @@ from homeassistant import config_entries
 # Newer Home Assistant reloads an entry itself when its options flow saves changed options (and
 # warns about update listeners); older releases lack the class and need a listener instead.
 OPTIONS_FLOW_RELOADS = hasattr(config_entries, "OptionsFlowWithReload")
-OptionsFlowBase = getattr(config_entries, "OptionsFlowWithReload", config_entries.OptionsFlow)
+if TYPE_CHECKING:  # type checkers see the current Home Assistant
+    OptionsFlowBase = config_entries.OptionsFlowWithReload
+else:
+    OptionsFlowBase = getattr(config_entries, "OptionsFlowWithReload", config_entries.OptionsFlow)
 
 
 def schema(fields: dict[Any, Any]) -> Any:
